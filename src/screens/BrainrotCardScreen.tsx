@@ -4,10 +4,20 @@ import { COLORS, RADIUS } from '../constants/theme';
 import Icon from '../components/Icon';
 
 type Props = {
+  totalXp: number;
+  archetypeTitle: string;
+  archetypeDesc: string;
+  privateMode: boolean;
   onToast: (message: string) => void;
 };
 
-export default function BrainrotCardScreen({ onToast }: Props) {
+export default function BrainrotCardScreen({
+  totalXp,
+  archetypeTitle,
+  archetypeDesc,
+  privateMode,
+  onToast,
+}: Props) {
   return (
     <ScrollView
       style={styles.scroll}
@@ -25,11 +35,19 @@ export default function BrainrotCardScreen({ onToast }: Props) {
 
       <TouchableOpacity
         style={styles.shareBtn}
-        onPress={() => onToast('Card copied to your imaginary story.')}
+        onPress={() =>
+          onToast(
+            privateMode
+              ? 'Private mode is on: Card snapshot copied locally only.'
+              : 'Card copied to your imaginary story.'
+          )
+        }
         activeOpacity={0.8}
       >
         <Icon name="sparkles" size={14} color={COLORS.white} />
-        <Text style={styles.shareBtnText}>Share card</Text>
+        <Text style={styles.shareBtnText}>
+          {privateMode ? 'Save private card' : 'Share card'}
+        </Text>
       </TouchableOpacity>
 
       {/* Identity Card */}
@@ -44,18 +62,18 @@ export default function BrainrotCardScreen({ onToast }: Props) {
         </View>
 
         <Text style={styles.eyebrow}>CURRENT ARCHETYPE</Text>
-        <Text style={styles.archetypeTitle}>Night Owl</Text>
-        <Text style={styles.archetypeDesc}>
-          "One more Reel"{'\n'}is your bedtime story.
-        </Text>
+        <Text style={styles.archetypeTitle}>{archetypeTitle}</Text>
+        <Text style={styles.archetypeDesc}>{archetypeDesc}</Text>
         <View style={styles.divider} />
-        <Text style={styles.cardFoot}>MEMBER SINCE 2026 · RANK 04</Text>
+        <Text style={styles.cardFoot}>
+          MEMBER SINCE 2026 · {totalXp} XP · {privateMode ? 'PRIVATE' : 'PUBLIC'}
+        </Text>
       </View>
 
       {/* Evolution Path */}
       <View style={styles.detailPanel}>
         <Text style={styles.eyebrow}>EVOLUTION PATH</Text>
-        <Text style={styles.detailTitle}>From newbie to night owl</Text>
+        <Text style={styles.detailTitle}>From newbie to grass toucher</Text>
         <View style={styles.evolution}>
           <View style={[styles.evoNode, styles.evoNodeActive]}>
             <Text style={styles.evoEmoji}>◡</Text>
@@ -64,12 +82,19 @@ export default function BrainrotCardScreen({ onToast }: Props) {
           <View style={[styles.evoLine, styles.evoLineActive]} />
           <View style={[styles.evoNode, styles.evoNodeActive]}>
             <Text style={styles.evoEmoji}>◠</Text>
-            <Text style={styles.evoLabel}>Cooked</Text>
+            <Text style={styles.evoLabel}>{archetypeTitle}</Text>
           </View>
-          <View style={styles.evoLine} />
-          <View style={styles.evoNode}>
-            <Text style={[styles.evoEmoji, { color: '#b0a2bd' }]}>★</Text>
-            <Text style={styles.evoLabel}>Doctor Doom</Text>
+          <View style={[styles.evoLine, totalXp >= 400 && styles.evoLineActive]} />
+          <View style={[styles.evoNode, totalXp >= 400 && styles.evoNodeActive]}>
+            <Text
+              style={[
+                styles.evoEmoji,
+                { color: totalXp >= 400 ? COLORS.pink : '#b0a2bd' },
+              ]}
+            >
+              ★
+            </Text>
+            <Text style={styles.evoLabel}>Offline Legend</Text>
           </View>
         </View>
       </View>

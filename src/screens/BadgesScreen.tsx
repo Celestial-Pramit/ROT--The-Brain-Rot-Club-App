@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { Badge } from '../constants/types';
 import Icon from '../components/Icon';
@@ -15,9 +15,10 @@ const badgeColorMap: Record<string, { bg: string; iconColor: string; accent: str
 
 type Props = {
   badges: Badge[];
+  onBadgePress?: (badge: Badge) => void;
 };
 
-export default function BadgesScreen({ badges }: Props) {
+export default function BadgesScreen({ badges, onBadgePress }: Props) {
   const unlockedCount = badges.filter((b) => b.unlocked).length;
 
   return (
@@ -53,7 +54,7 @@ export default function BadgesScreen({ badges }: Props) {
           <Text style={styles.progressEyebrow}>YOUR COLLECTION</Text>
           <Text style={styles.progressTitle}>Every reset deserves a trophy.</Text>
           <Text style={styles.progressSub}>
-            Complete today's missions to reveal the next shiny thing.
+            Complete today's missions or a focus break to reveal the next shiny thing.
           </Text>
         </View>
         <View style={styles.meter}>
@@ -85,8 +86,10 @@ export default function BadgesScreen({ badges }: Props) {
         {badges.map((badge) => {
           const colorScheme = badgeColorMap[badge.color] || badgeColorMap.purple;
           return (
-            <View
-              key={badge.name}
+            <TouchableOpacity
+              key={badge.id}
+              activeOpacity={0.8}
+              onPress={() => onBadgePress?.(badge)}
               style={[
                 styles.badgeCard,
                 badge.unlocked ? styles.badgeUnlocked : styles.badgeLocked,
@@ -139,9 +142,13 @@ export default function BadgesScreen({ badges }: Props) {
                 {badge.unlocked ? badge.description : badge.requirement}
               </Text>
               <Text style={styles.badgeFoot}>
-                {badge.unlocked ? 'ROT. CLUB MEMBER' : 'KEEP GOING'}
+                {badge.unlocked
+                  ? badge.unlockedAt
+                    ? `EARNED ${badge.unlockedAt}`
+                    : 'ROT. CLUB MEMBER'
+                  : 'KEEP GOING'}
               </Text>
-            </View>
+            </TouchableOpacity>
           );
         })}
       </View>

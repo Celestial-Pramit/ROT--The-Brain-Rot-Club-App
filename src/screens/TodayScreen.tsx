@@ -1,7 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
-import { Mission, DailyChest } from '../constants/types';
+import { DailyChest, InstagramUsageSummary, Mission } from '../constants/types';
+import {
+  BrainrotIndexSummary,
+  formatMinutesAsHoursAndMinutes,
+  formatReadableDateHeader,
+  getGreetingForHour,
+  LimitProgressSummary,
+  UsageDisplayState,
+} from '../utils/domainLogic';
 import MissionRow from '../components/MissionRow';
 import DailyChestCard from '../components/DailyChestCard';
 import Icon from '../components/Icon';
@@ -13,20 +21,71 @@ type Props = {
   onMissionClick: (index: number) => void;
   onBreak: () => void;
   onViewMissions: () => void;
+  onOpenSettings: () => void;
   chest: DailyChest;
   onClaimChest: () => void;
+  usageSummary: InstagramUsageSummary | null;
+  usageDisplay: UsageDisplayState;
+  limitProgress: LimitProgressSummary;
+  brainrotIndex: BrainrotIndexSummary;
+  effectiveLimitMinutes: number;
+  showGentleNudge: boolean;
+  onUsageAction: () => void;
+  onRefreshUsage: () => void;
 };
 
 export default function TodayScreen({
-  completedMissions,
   earnedXp,
   missions,
   onMissionClick,
   onBreak,
   onViewMissions,
+  onOpenSettings,
   chest,
   onClaimChest,
+  usageSummary,
+  usageDisplay,
+  limitProgress,
+  brainrotIndex,
+  effectiveLimitMinutes,
+  showGentleNudge,
+  onUsageAction,
+  onRefreshUsage,
 }: Props) {
+  const dateHeader = formatReadableDateHeader();
+  const greeting = getGreetingForHour();
+
+  const breakdown = usageSummary?.dailyBreakdown ?? [];
+  const hasRealBreakdown = usageDisplay.hasVerifiedEstimate && breakdown.length > 0;
+  const maxChartMinutes = Math.max(120, effectiveLimitMinutes);
+  const topAxisLabel = formatMinutesAsHoursAndMinutes(maxChartMinutes).compact;
+  const midAxisLabel = formatMinutesAsHoursAndMinutes(Math.round(maxChartMinutes / 2)).compact;
+
+  const chartDays = hasRealBreakdown
+    ? breakdown.slice(-7).map((pt, idx, arr) => {
+        const mins = Math.round(pt.foregroundMs / 60000);
+        const pct =
+          mins === 0
+            ? 8
+            : Math.max(12, Math.min(100, Math.round((mins / maxChartMinutes) * 100)));
+        return {
+          key: `${pt.date}-${idx}`,
+          heightPct: pct,
+          label: pt.dayLabel || 'D',
+          isToday: idx === arr.length - 1,
+          isOver: mins > effectiveLimitMinutes,
+          minutes: mins,
+        };
+      })
+    : ['W', 'T', 'F', 'S', 'S', 'M', 'T'].map((d, i) => ({
+        key: `placeholder-${i}`,
+        heightPct: 12,
+        label: d,
+        isToday: i === 6,
+        isOver: false,
+        minutes: null,
+      }));
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -35,9 +94,9 @@ export default function TodayScreen({
     >
       {/* Welcome */}
       <View style={styles.welcomeRow}>
-        <Text style={styles.eyebrow}>TUESDAY, NOVEMBER 11</Text>
+        <Text style={styles.eyebrow}>{dateHeader}</Text>
         <Text style={styles.heading}>
-          Good morning, Rafi<Text style={styles.dot}>.</Text>
+          {greeting}, Rafi<Text style={styles.dot}>.</Text>
         </Text>
         <Text style={styles.subtitle}>
           Your scroll has a personality. Today, it is choosing balance.
@@ -47,11 +106,11 @@ export default function TodayScreen({
       {/* Mood Badge */}
       <View style={styles.moodBadge}>
         <View style={styles.moodFace}>
-          <Text style={styles.moodEmoji}>◡</Text>
+          <Text style={styles.moodEmoji}>{brainrotIndex.moodEmoji}</Text>
         </View>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.moodLabel}>Brain mood</Text>
-          <Text style={styles.moodValue}>Chill but curious</Text>
+          <Text style={styles.moodValue}>{brainrotIndex.moodValue}</Text>
         </View>
       </View>
 
@@ -59,19 +118,51 @@ export default function TodayScreen({
       <View style={styles.usageCard}>
         <View style={styles.usageTop}>
           <Text style={styles.eyebrowLight}>TODAY'S ESTIMATE</Text>
-          <View style={styles.statusDot}>
-            <View style={styles.greenDot} />
-            <Text style={styles.statusText}>Fresh 12 min ago</Text>
-          </View>
+          <TouchableOpacity
+            style={styles.statusDot}
+            onPress={onRefreshUsage}
+            activeOpacity={0.75}
+          >
+            <View
+              style={[
+                styles.greenDot,
+                { backgroundColor: usageDisplay.badgeDotColor },
+              ]}
+            />
+            <Text style={styles.statusText}>{usageDisplay.freshnessText}</Text>
+            <Icon name="refresh" size={11} color="#d9c9ed" />
+          </TouchableOpacity>
         </View>
+
         <View style={styles.usageMain}>
-          <View>
-            <Text style={styles.usageNumber}>
-              1<Text style={styles.usageUnit}>h</Text> 24
-              <Text style={styles.usageUnit}>m</Text>
-            </Text>
-            <Text style={styles.usageLabel}>on Instagram Reels</Text>
+          <View style={styles.usageCopyCol}>
+            {usageDisplay.hasVerifiedEstimate ? (
+              <Text style={styles.usageNumber}>
+                {usageDisplay.hours}
+                <Text style={styles.usageUnit}>h</Text>{' '}
+                {String(usageDisplay.minutes ?? 0).padStart(2, '0')}
+                <Text style={styles.usageUnit}>m</Text>
+              </Text>
+            ) : (
+              <Text style={styles.usageStatusHeadline}>
+                {usageDisplay.headlineText}
+              </Text>
+            )}
+            <Text style={styles.usageLabel}>{usageDisplay.subtitleText}</Text>
+
+            {usageDisplay.hasVerifiedEstimate && (
+              <View style={styles.sourcePill}>
+                <Icon name="info" size={10} color="#f7d755" />
+                <Text style={styles.sourcePillText}>
+                  Android UsageStats ·{' '}
+                  {usageSummary?.todaySessionCount
+                    ? `${usageSummary.todaySessionCount} intervals today`
+                    : 'App-level foreground time'}
+                </Text>
+              </View>
+            )}
           </View>
+
           {/* Brain mascot */}
           <View style={styles.mascot}>
             <View style={styles.eyeLeft} />
@@ -79,16 +170,69 @@ export default function TodayScreen({
             <View style={styles.mouth} />
           </View>
         </View>
+
+        {!usageDisplay.hasVerifiedEstimate && usageDisplay.actionLabel && (
+          <TouchableOpacity
+            style={styles.usageActionBtn}
+            onPress={onUsageAction}
+            activeOpacity={0.85}
+          >
+            <Icon
+              name={
+                usageDisplay.actionKind === 'permission' ||
+                usageDisplay.actionKind === 'consent'
+                  ? 'shield-check'
+                  : 'refresh'
+              }
+              size={14}
+              color={COLORS.purple}
+            />
+            <Text style={styles.usageActionBtnText}>{usageDisplay.actionLabel}</Text>
+          </TouchableOpacity>
+        )}
+
         <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: '70%' }]} />
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${limitProgress.progressPercent}%` as any,
+                backgroundColor: limitProgress.isOverLimit
+                  ? COLORS.pink
+                  : COLORS.yellow,
+              },
+            ]}
+          />
         </View>
+
         <View style={styles.usageFooter}>
-          <Text style={styles.footerText}>
-            Daily limit <Text style={styles.footerBold}>2h 00m</Text>
+          <TouchableOpacity onPress={onOpenSettings} activeOpacity={0.7}>
+            <Text style={styles.footerText}>
+              Daily limit{' '}
+              <Text style={styles.footerBold}>{limitProgress.limitFormatted}</Text>{' '}
+              (edit)
+            </Text>
+          </TouchableOpacity>
+          <Text
+            style={[
+              styles.footerRemaining,
+              limitProgress.isOverLimit && { color: '#ffb5d5' },
+            ]}
+          >
+            {limitProgress.remainingFormatted}
           </Text>
-          <Text style={styles.footerRemaining}>36 min left</Text>
         </View>
       </View>
+
+      {/* Gentle Nudge Banner when near/over limit */}
+      {showGentleNudge && limitProgress.nudgeMessage && (
+        <View style={styles.nudgeBanner}>
+          <View style={styles.nudgeIcon}>
+            <Icon name="bell" size={15} color={COLORS.purple} />
+          </View>
+          <Text style={styles.nudgeText}>{limitProgress.nudgeMessage}</Text>
+        </View>
+      )}
 
       {/* Brainrot Index */}
       <View style={styles.indexCard}>
@@ -96,13 +240,14 @@ export default function TodayScreen({
           <Text style={styles.eyebrow}>BRAINROT INDEX</Text>
           <View style={styles.trendBadge}>
             <Icon name="bar-chart" size={14} color={COLORS.green} />
-            <Text style={styles.trendText}>-12%</Text>
+            <Text style={styles.trendText}>{brainrotIndex.trendText}</Text>
           </View>
         </View>
         <Text style={styles.indexScore}>
-          68<Text style={styles.indexMax}>/100</Text>
+          {brainrotIndex.score !== null ? brainrotIndex.score : '—'}
+          <Text style={styles.indexMax}>/100</Text>
         </Text>
-        <Text style={styles.indexLabel}>Your brain is in the green-ish zone.</Text>
+        <Text style={styles.indexLabel}>{brainrotIndex.label}</Text>
         <View style={styles.scaleRow}>
           {['#dfd2f0', '#c1a5ea', '#ffd640', '#f58ab6', '#f32c87'].map((color, i) => (
             <View key={i} style={[styles.scaleBar, { backgroundColor: color }]} />
@@ -130,7 +275,11 @@ export default function TodayScreen({
       </View>
       <View style={styles.missionList}>
         {missions.map((mission, index) => (
-          <MissionRow key={mission.title} mission={mission} onPress={() => onMissionClick(index)} />
+          <MissionRow
+            key={mission.id}
+            mission={mission}
+            onPress={() => onMissionClick(index)}
+          />
         ))}
       </View>
 
@@ -138,28 +287,28 @@ export default function TodayScreen({
       <View style={styles.sectionHeader}>
         <View>
           <Text style={styles.eyebrow}>YOUR PROGRESS</Text>
-          <Text style={styles.sectionTitle}>Healthy habits</Text>
+          <Text style={styles.sectionTitle}>Healthy habits (7-day window)</Text>
         </View>
       </View>
       <View style={styles.chartContainer}>
         <View style={styles.chartLabels}>
-          <Text style={styles.chartLabel}>2h</Text>
-          <Text style={styles.chartLabel}>1h</Text>
+          <Text style={styles.chartLabel}>{topAxisLabel}</Text>
+          <Text style={styles.chartLabel}>{midAxisLabel}</Text>
           <Text style={styles.chartLabel}>0</Text>
         </View>
         <View style={styles.chartBars}>
-          {[42, 66, 51, 78, 60, 38, 70].map((h, i) => (
-            <View key={i} style={styles.barWrap}>
+          {chartDays.map((item) => (
+            <View key={item.key} style={styles.barWrap}>
               <View
                 style={[
                   styles.bar,
-                  { height: `${h}%` as any },
-                  i === 1 || i === 3 ? styles.barPink : null,
-                  i === 6 ? styles.barToday : null,
+                  { height: `${item.heightPct}%` as any },
+                  item.isOver ? styles.barPink : null,
+                  item.isToday ? styles.barToday : null,
                 ]}
               />
-              <Text style={[styles.barLabel, i === 6 && styles.barLabelToday]}>
-                {['W', 'T', 'F', 'S', 'S', 'M', 'T'][i]}
+              <Text style={[styles.barLabel, item.isToday && styles.barLabelToday]}>
+                {item.label}
               </Text>
             </View>
           ))}
@@ -172,8 +321,18 @@ export default function TodayScreen({
           <Icon name="leaf" size={16} color="#49a878" />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.calloutBold}>You've saved 43 min</Text>
-          <Text style={styles.calloutSub}>compared with last Tuesday</Text>
+          <Text style={styles.calloutBold}>
+            {usageDisplay.hasVerifiedEstimate && limitProgress.remainingMinutes !== null
+              ? limitProgress.isOverLimit
+                ? 'Time for a gentle reset'
+                : `${limitProgress.remainingFormatted} inside today's target`
+              : 'Honest local-first tracking'}
+          </Text>
+          <Text style={styles.calloutSub}>
+            {usageDisplay.hasVerifiedEstimate
+              ? `Compared against your ${limitProgress.limitFormatted} daily target`
+              : 'Enable Usage Access to populate your 7-day Instagram foreground trend'}
+          </Text>
         </View>
         <Text style={styles.sparkle}>✦</Text>
       </View>
@@ -198,7 +357,8 @@ export default function TodayScreen({
         <View style={{ flex: 1 }}>
           <Text style={styles.bannerBold}>Private by default.</Text>
           <Text style={styles.bannerSub}>
-            Your estimates stay yours. ROT never asks for your Instagram login.
+            Your estimates stay on this device. ROT never asks for your Instagram login
+            and never claims exact Reel counts.
           </Text>
         </View>
       </View>
@@ -208,8 +368,8 @@ export default function TodayScreen({
         <Icon name="sparkles" size={14} color={COLORS.pink} />
         <Text style={styles.earnedText}>
           {earnedXp > 0
-            ? `You have earned ${earnedXp} XP from missions today.`
-            : 'Complete a mission to grow your brain bank.'}
+            ? `You have earned ${earnedXp} XP from healthy actions today.`
+            : 'Complete a mission or focus break to grow your brain bank.'}
         </Text>
       </View>
     </ScrollView>
@@ -304,21 +464,68 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: 14,
-    marginBottom: 16,
+    marginBottom: 14,
     zIndex: 1,
+    gap: 10,
+  },
+  usageCopyCol: {
+    flex: 1,
   },
   usageNumber: {
-    fontSize: 50,
+    fontSize: 48,
     fontWeight: '700',
     color: COLORS.white,
-    letterSpacing: -3,
+    letterSpacing: -2.5,
+  },
+  usageStatusHeadline: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: COLORS.yellow,
+    letterSpacing: -1,
   },
   usageUnit: { fontSize: 22, color: '#cbbce4', letterSpacing: -0.5 },
-  usageLabel: { fontSize: 13, color: '#d6cbea', marginTop: 4 },
+  usageLabel: {
+    fontSize: 12,
+    color: '#d6cbea',
+    marginTop: 4,
+    lineHeight: 17,
+  },
+  sourcePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(41,16,76,0.38)',
+    alignSelf: 'flex-start',
+  },
+  sourcePillText: {
+    fontSize: 10,
+    color: '#e5daf5',
+    fontWeight: '600',
+  },
+  usageActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.yellow,
+    marginBottom: 14,
+  },
+  usageActionBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
   mascot: {
-    width: 90,
-    height: 76,
-    borderRadius: 38,
+    width: 86,
+    height: 74,
+    borderRadius: 37,
     backgroundColor: COLORS.pink,
     borderWidth: 3,
     borderColor: COLORS.darkPurple,
@@ -331,8 +538,8 @@ const styles = StyleSheet.create({
   },
   eyeLeft: {
     position: 'absolute',
-    top: 32,
-    left: 18,
+    top: 30,
+    left: 17,
     width: 15,
     height: 10,
     borderTopWidth: 3,
@@ -341,8 +548,8 @@ const styles = StyleSheet.create({
   },
   eyeRight: {
     position: 'absolute',
-    top: 32,
-    right: 18,
+    top: 30,
+    right: 17,
     width: 15,
     height: 10,
     borderTopWidth: 3,
@@ -351,8 +558,8 @@ const styles = StyleSheet.create({
   },
   mouth: {
     position: 'absolute',
-    bottom: 16,
-    left: 30,
+    bottom: 15,
+    left: 29,
     width: 18,
     height: 9,
     borderBottomWidth: 3,
@@ -380,6 +587,34 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 11, color: '#cdbfe1' },
   footerBold: { color: COLORS.white, fontWeight: '700' },
   footerRemaining: { fontSize: 11, color: '#f7d755', fontWeight: '700' },
+
+  // Gentle Nudge
+  nudgeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: RADIUS.lg,
+    backgroundColor: '#fff0f7',
+    borderWidth: 1,
+    borderColor: '#f8cde1',
+    marginBottom: 14,
+  },
+  nudgeIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#ffe0ef',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  nudgeText: {
+    flex: 1,
+    fontSize: 11,
+    color: COLORS.ink,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
 
   // Index Card
   indexCard: {
@@ -409,7 +644,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   indexMax: { fontSize: 22, color: COLORS.muted, letterSpacing: -0.5 },
-  indexLabel: { fontSize: 12, color: COLORS.muted, marginBottom: 18 },
+  indexLabel: { fontSize: 12, color: COLORS.muted, marginBottom: 18, lineHeight: 17 },
   scaleRow: { flexDirection: 'row', gap: 4 },
   scaleBar: { flex: 1, height: 9, borderRadius: 4 },
   scaleLabels: {
@@ -467,7 +702,7 @@ const styles = StyleSheet.create({
   },
   bar: {
     width: 16,
-    minHeight: 12,
+    minHeight: 8,
     borderTopLeftRadius: 5,
     borderTopRightRadius: 5,
     backgroundColor: '#dac9ee',

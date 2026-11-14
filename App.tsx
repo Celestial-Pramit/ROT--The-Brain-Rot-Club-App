@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,11 +8,43 @@ import {
   StatusBar,
   SafeAreaView,
   Platform,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { COLORS, RADIUS } from './src/constants/theme';
-import { View as ViewType, Mission, DailyChest, Celebration } from './src/constants/types';
-import { initialMissions, dailyItems, getBadges } from './src/constants/data';
+import { COLORS } from './src/constants/theme';
+import {
+  Badge,
+  Celebration,
+  InstagramUsageSummary,
+  PersistedAppState,
+  UserSettings,
+  View as ViewType,
+} from './src/constants/types';
+import { getBadges } from './src/constants/data';
+import {
+  buildUsageDisplayState,
+  calculateBrainrotIndex,
+  calculateEarnedXpForDate,
+  calculateLimitProgress,
+  calculateTotalXp,
+  claimDailyChestState,
+  clampDailyLimitMinutes,
+  clearLocalHistoryState,
+  completeFocusBreakState,
+  createInitialPersistedState,
+  formatMinutesAsHoursAndMinutes,
+  getDailyChestForDate,
+  getEffectiveDailyLimitMinutes,
+  getLocalDateKey,
+  getMissionsForDate,
+  toggleMissionState,
+} from './src/utils/domainLogic';
+import { loadPersistedState, savePersistedState } from './src/utils/storage';
+import {
+  openAndroidUsageAccessSettings,
+  queryInstagramUsageSummary,
+} from './src/utils/usageStats';
 import TodayScreen from './src/screens/TodayScreen';
 import MissionsScreen from './src/screens/MissionsScreen';
 import BadgesScreen from './src/screens/BadgesScreen';
@@ -21,6 +53,7 @@ import BrainrotCardScreen from './src/screens/BrainrotCardScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import BreakModal from './src/components/BreakModal';
 import CelebrationOverlay from './src/components/CelebrationOverlay';
+import UsagePermissionModal from './src/components/UsagePermissionModal';
 import Icon from './src/components/Icon';
 
 type TabItem = {
@@ -40,15 +73,97 @@ const tabs: TabItem[] = [
 
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>('Today');
-  const [missions, setMissions] = useState<Mission[]>(initialMissions);
+  const [appState, setAppState] = useState<PersistedAppState>(() =>
+    createInitialPersistedState()
+  );
+  const [hydrated, setHydrated] = useState(false);
+  const [usageSummary, setUsageSummary] = useState<InstagramUsageSummary | null>(
+    null
+  );
+  const [permissionModalOpen, setPermissionModalOpen] = useState(false);
   const [breakOpen, setBreakOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [celebration, setCelebration] = useState<Celebration | null>(null);
-  const [bonusXp, setBonusXp] = useState(0);
-  const [dailyChest, setDailyChest] = useState<DailyChest>({
-    claimed: false,
-    item: dailyItems[new Date().getDate() % dailyItems.length],
-  });
+
+  const appStateRef = useRef(appState);
+  appStateRef.current = appState;
+
+  const updateAndPersist = useCallback(
+    (updater: (prev: PersistedAppState) => PersistedAppState) => {
+      setAppState((prev) => {
+        const next = updater(prev);
+        void savePersistedState(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const syncUsageStats = useCallback(
+    async (showFeedbackToast = false) => {
+      const summary = await queryInstagramUsageSummary(7);
+      setUsageSummary(summary);
+      updateAndPersist((prev) => ({
+        ...prev,
+        cachedUsageSummary:
+          prev.consentStatus === 'accepted' && prev.trackingEnabled
+            ? summary
+            : prev.cachedUsageSummary,
+      }));
+      if (showFeedbackToast) {
+        if (!summary.permissionGranted) {
+          setToast('Usage Access permission is not granted yet.');
+        } else if (summary.status === 'ok' && summary.todayForegroundMs !== null) {
+          const mins = Math.round(summary.todayForegroundMs / 60000);
+          setToast(
+            `Synced: ${formatMinutesAsHoursAndMinutes(mins).compact} estimated Instagram foreground time today.`
+          );
+        } else {
+          setToast(summary.statusReason || 'Usage status refreshed.');
+        }
+      }
+    },
+    [updateAndPersist]
+  );
+
+  // Hydrate persisted state and query initial UsageStats
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const loaded = await loadPersistedState();
+      if (!mounted) return;
+      setAppState(loaded);
+      if (loaded.cachedUsageSummary) {
+        setUsageSummary(loaded.cachedUsageSummary);
+      }
+      setHydrated(true);
+
+      const liveSummary = await queryInstagramUsageSummary(7);
+      if (!mounted) return;
+      setUsageSummary(liveSummary);
+
+      // Prompt consent modal on initial launch if still pending
+      if (loaded.consentStatus === 'pending') {
+        setPermissionModalOpen(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Re-query UsageStats automatically when returning from Android system Usage Access settings
+  useEffect(() => {
+    const sub = AppState.addEventListener(
+      'change',
+      (nextStatus: AppStateStatus) => {
+        if (nextStatus === 'active' && hydrated) {
+          void syncUsageStats(false);
+        }
+      }
+    );
+    return () => sub.remove();
+  }, [hydrated, syncUsageStats]);
 
   // Toast animation
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -82,66 +197,201 @@ export default function App() {
           useNativeDriver: true,
         }),
       ]).start(() => setToast(''));
-    }, 2400);
+    }, 2600);
 
     return () => clearTimeout(timer);
-  }, [toast]);
+  }, [toast, toastOpacity, toastTranslateY]);
 
+  const dateKey = getLocalDateKey();
+  const missions = getMissionsForDate(appState, dateKey);
   const completedMissions = missions.filter((m) => m.done).length;
-  const earnedXp = missions
-    .filter((m) => m.done)
-    .reduce((total, m) => total + m.reward, 0);
-  const badges = getBadges(missions);
+  const dailyChest = getDailyChestForDate(appState);
+  const totalXp = calculateTotalXp(appState);
+  const earnedTodayXp = calculateEarnedXpForDate(appState, dateKey);
+  const badges = getBadges(
+    missions,
+    appState.completedFocusBreaks,
+    appState.unlockedBadges
+  );
 
-  function toggleMission(index: number) {
-    const nextMissions = missions.map((m, i) =>
-      i === index ? { ...m, done: !m.done } : m
+  const effectiveLimitMinutes = getEffectiveDailyLimitMinutes(
+    appState.dailyLimitMinutes,
+    appState.settings.weekendBreathingRoom
+  );
+
+  const usageDisplay = buildUsageDisplayState(
+    usageSummary,
+    appState.consentStatus,
+    appState.trackingEnabled
+  );
+
+  const limitProgress = calculateLimitProgress(
+    usageSummary?.todayForegroundMs ?? null,
+    effectiveLimitMinutes,
+    usageDisplay.hasVerifiedEstimate
+  );
+
+  const brainrotIndex = calculateBrainrotIndex(
+    usageSummary?.todayForegroundMs ?? null,
+    effectiveLimitMinutes,
+    usageDisplay.hasVerifiedEstimate,
+    completedMissions,
+    appState.completedFocusBreaks
+  );
+
+  function handleToggleMission(index: number) {
+    const result = toggleMissionState(appStateRef.current, index, dateKey);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleClaimDailyChest() {
+    const result = claimDailyChestState(appStateRef.current);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleCompleteFocusBreak(sessionId: string) {
+    setBreakOpen(false);
+    const result = completeFocusBreakState(
+      appStateRef.current,
+      sessionId,
+      dateKey
     );
-    setMissions(nextMissions);
-    const mission = missions[index];
-    if (mission.done) {
-      setToast('Mission reopened. No shame, just another chance.');
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleBadgePress(badge: Badge) {
+    if (!badge.unlocked) {
+      setToast(`Keep going: ${badge.requirement} to unlock ${badge.name}.`);
       return;
     }
-    const nextBadges = getBadges(nextMissions);
-    const newlyUnlocked = nextBadges.find(
-      (b, bi) => b.unlocked && !badges[bi].unlocked
-    );
-    setCelebration(
-      newlyUnlocked
-        ? {
-            title: newlyUnlocked.name,
-            detail: newlyUnlocked.description,
-            reward: 'SPECIAL BADGE UNLOCKED',
-            iconName: newlyUnlocked.iconName,
-            kind: 'badge',
-          }
-        : {
-            title: 'Mission complete',
-            detail: mission.title,
-            reward: `+${mission.reward} XP`,
-            iconName: 'check',
-            kind: 'mission',
-          }
-    );
+    setCelebration({
+      title: badge.name,
+      detail: badge.description,
+      reward: 'TROPHY CABINET HIGHLIGHT',
+      iconName: badge.iconName,
+      kind: 'badge',
+    });
+  }
+
+  function handleUsageAction() {
+    if (usageDisplay.actionKind === 'consent') {
+      setPermissionModalOpen(true);
+      return;
+    }
+    if (usageDisplay.actionKind === 'enable_tracking') {
+      updateAndPersist((prev) => ({
+        ...prev,
+        trackingEnabled: true,
+      }));
+      void syncUsageStats(true);
+      return;
+    }
+    if (usageDisplay.actionKind === 'permission') {
+      setPermissionModalOpen(true);
+      return;
+    }
+    void syncUsageStats(true);
+  }
+
+  async function handleAcceptAndOpenSettings() {
+    const nowIso = new Date().toISOString();
+    updateAndPersist((prev) => ({
+      ...prev,
+      consentStatus: 'accepted',
+      consentUpdatedAt: nowIso,
+      trackingEnabled: true,
+    }));
+    setPermissionModalOpen(false);
+    const opened = await openAndroidUsageAccessSettings();
+    if (!opened) {
+      setToast('Open Android Settings > Apps > Special app access > Usage access.');
+    } else {
+      setToast('Enable Usage Access for ROT, then return to the app.');
+    }
+  }
+
+  function handleAcceptWithoutSettings() {
+    const nowIso = new Date().toISOString();
+    updateAndPersist((prev) => ({
+      ...prev,
+      consentStatus: 'accepted',
+      consentUpdatedAt: nowIso,
+      trackingEnabled: true,
+    }));
+    setPermissionModalOpen(false);
+    void syncUsageStats(true);
+  }
+
+  function handleDeclineOrLater() {
+    const nowIso = new Date().toISOString();
+    updateAndPersist((prev) => ({
+      ...prev,
+      consentStatus: prev.consentStatus === 'accepted' ? 'accepted' : 'declined',
+      consentUpdatedAt: nowIso,
+      trackingEnabled: false,
+    }));
+    setPermissionModalOpen(false);
+    setToast('Continuing without Instagram tracking. Missions & breaks still work.');
+  }
+
+  function handleChangeDailyLimit(minutes: number) {
+    const clamped = clampDailyLimitMinutes(minutes);
+    updateAndPersist((prev) => {
+      // Also complete "Set a scroll limit" mission if not yet done today
+      const currentMissions = getMissionsForDate(prev, dateKey);
+      const limitIdx = currentMissions.findIndex(
+        (m) => m.id === 'set-scroll-limit'
+      );
+      let next = {
+        ...prev,
+        dailyLimitMinutes: clamped,
+      };
+      if (limitIdx >= 0 && !currentMissions[limitIdx].done) {
+        next = toggleMissionState(next, limitIdx, dateKey, true).nextState;
+      }
+      return next;
+    });
     setToast(
-      newlyUnlocked
-        ? `${newlyUnlocked.name} unlocked.`
-        : `+${mission.reward} XP added to your healthy brain bank.`
+      `Daily limit updated to ${formatMinutesAsHoursAndMinutes(clamped).compact}.`
     );
   }
 
-  function claimDailyChest() {
-    if (dailyChest.claimed) return;
-    setDailyChest((c) => ({ ...c, claimed: true }));
-    setBonusXp((c) => c + 50);
-    setCelebration({
-      title: 'Daily chest opened',
-      detail: dailyChest.item,
-      reward: '+50 XP · ITEM FOUND',
-      iconName: 'gift',
-      kind: 'chest',
+  function handleToggleSetting(key: keyof UserSettings) {
+    updateAndPersist((prev) => {
+      const nextVal = !prev.settings[key];
+      const nextSettings = {
+        ...prev.settings,
+        [key]: nextVal,
+      };
+      return {
+        ...prev,
+        settings: nextSettings,
+      };
     });
+    setToast('Preference saved locally.');
+  }
+
+  function handleClearLocalHistory() {
+    updateAndPersist((prev) => clearLocalHistoryState(prev, dateKey));
+    setToast('Local usage cache and mission history cleared.');
   }
 
   function renderScreen() {
@@ -150,31 +400,94 @@ export default function App() {
         return (
           <TodayScreen
             completedMissions={completedMissions}
-            earnedXp={earnedXp + bonusXp}
+            earnedXp={earnedTodayXp}
             missions={missions}
-            onMissionClick={toggleMission}
+            onMissionClick={handleToggleMission}
             onBreak={() => setBreakOpen(true)}
             onViewMissions={() => setActiveView('Missions')}
+            onOpenSettings={() => setActiveView('Settings')}
             chest={dailyChest}
-            onClaimChest={claimDailyChest}
+            onClaimChest={handleClaimDailyChest}
+            usageSummary={usageSummary}
+            usageDisplay={usageDisplay}
+            limitProgress={limitProgress}
+            brainrotIndex={brainrotIndex}
+            effectiveLimitMinutes={effectiveLimitMinutes}
+            showGentleNudge={appState.settings.dailyGentleNudge}
+            onUsageAction={handleUsageAction}
+            onRefreshUsage={() => void syncUsageStats(true)}
           />
         );
       case 'Missions':
         return (
           <MissionsScreen
             missions={missions}
-            onMissionClick={toggleMission}
-            earnedXp={earnedXp}
+            onMissionClick={handleToggleMission}
+            earnedXp={earnedTodayXp}
           />
         );
       case 'Badges':
-        return <BadgesScreen badges={badges} />;
+        return (
+          <BadgesScreen
+            badges={badges}
+            onBadgePress={handleBadgePress}
+          />
+        );
       case 'Leaderboard':
-        return <LeaderboardScreen onToast={setToast} />;
+        return (
+          <LeaderboardScreen
+            totalXp={totalXp}
+            earnedTodayXp={earnedTodayXp}
+            onToast={setToast}
+          />
+        );
       case 'Card':
-        return <BrainrotCardScreen onToast={setToast} />;
+        return (
+          <BrainrotCardScreen
+            totalXp={totalXp}
+            archetypeTitle={brainrotIndex.archetypeTitle}
+            archetypeDesc={brainrotIndex.archetypeDesc}
+            privateMode={appState.settings.privateMode}
+            onToast={setToast}
+          />
+        );
       case 'Settings':
-        return <SettingsScreen onToast={setToast} />;
+        return (
+          <SettingsScreen
+            consentStatus={appState.consentStatus}
+            trackingEnabled={appState.trackingEnabled}
+            dailyLimitMinutes={appState.dailyLimitMinutes}
+            settings={appState.settings}
+            usageSummary={usageSummary}
+            onToggleTracking={(nextEnabled) => {
+              updateAndPersist((prev) => ({
+                ...prev,
+                trackingEnabled: nextEnabled,
+              }));
+              setToast(
+                nextEnabled
+                  ? 'Instagram usage tracking resumed.'
+                  : 'Instagram usage tracking paused.'
+              );
+              if (nextEnabled) {
+                void syncUsageStats(false);
+              }
+            }}
+            onOpenUsageSetup={() => setPermissionModalOpen(true)}
+            onOpenSystemUsageSettings={async () => {
+              const opened = await openAndroidUsageAccessSettings();
+              if (!opened) {
+                setToast(
+                  'Open Android Settings > Apps > Special app access > Usage access.'
+                );
+              }
+            }}
+            onChangeDailyLimit={handleChangeDailyLimit}
+            onToggleSetting={handleToggleSetting}
+            onClearLocalHistory={handleClearLocalHistory}
+            onRefreshUsage={() => void syncUsageStats(true)}
+          />
+        );
     }
   }
 
@@ -196,14 +509,19 @@ export default function App() {
         <View style={styles.topActions}>
           <TouchableOpacity
             style={styles.iconButton}
-            onPress={() => setToast('You are all caught up. Your brain approves.')}
+            onPress={() =>
+              setToast(
+                limitProgress.nudgeMessage ||
+                  'You are all caught up. Your brain approves.'
+              )
+            }
           >
             <Feather name="bell" size={17} color={COLORS.purple} />
           </TouchableOpacity>
           <View style={styles.xpPill}>
             <Feather name="zap" size={13} color={COLORS.pink} />
             <Text style={styles.xpText}>
-              <Text style={styles.xpBold}>{284 + earnedXp + bonusXp}</Text> XP
+              <Text style={styles.xpBold}>{totalXp}</Text> XP
             </Text>
           </View>
         </View>
@@ -246,8 +564,25 @@ export default function App() {
         })}
       </View>
 
+      {/* Usage Access & Consent Modal */}
+      <UsagePermissionModal
+        visible={permissionModalOpen}
+        consentStatus={appState.consentStatus}
+        permissionGranted={Boolean(usageSummary?.permissionGranted)}
+        instagramInstalled={Boolean(usageSummary?.instagramInstalled)}
+        onAcceptAndOpenSettings={handleAcceptAndOpenSettings}
+        onAcceptWithoutSettings={handleAcceptWithoutSettings}
+        onDeclineOrLater={handleDeclineOrLater}
+        onClose={() => setPermissionModalOpen(false)}
+      />
+
       {/* Break Modal */}
-      <BreakModal visible={breakOpen} onClose={() => setBreakOpen(false)} />
+      <BreakModal
+        visible={breakOpen}
+        completedBreaksCount={appState.completedFocusBreaks}
+        onClose={() => setBreakOpen(false)}
+        onCompleteBreak={handleCompleteFocusBreak}
+      />
 
       {/* Celebration Overlay */}
       {celebration && (
