@@ -11,8 +11,13 @@ import { COLORS, RADIUS } from '../constants/theme';
 import { DAILY_LIMIT_OPTIONS } from '../constants/data';
 import { ConsentStatus, InstagramUsageSummary, UserSettings } from '../constants/types';
 import {
+  DAILY_LIMIT_STEP_MINUTES,
   formatMinutesAsHoursAndMinutes,
+  MAX_DAILY_LIMIT_MINUTES,
   MAX_DISPLAY_NAME_LENGTH,
+  MIN_DAILY_LIMIT_MINUTES,
+  parseCustomDailyLimitInput,
+  stepDailyLimitMinutes,
   UsageDisplayState,
 } from '../utils/domainLogic';
 import Icon from '../components/Icon';
@@ -35,6 +40,9 @@ type Props = {
   onToggleSetting: (key: keyof UserSettings) => void;
   onClearLocalHistory: () => void;
   onRefreshUsage: () => void;
+  onExportUserData: () => void;
+  exportJsonPreview: string;
+  onSendTestNotification: () => void;
 };
 
 function SettingRow({
@@ -88,18 +96,41 @@ export default function SettingsScreen({
   onToggleSetting,
   onClearLocalHistory,
   onRefreshUsage,
+  onExportUserData,
+  exportJsonPreview,
+  onSendTestNotification,
 }: Props) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [draftName, setDraftName] = useState(customDisplayName ?? displayName);
+  const [customLimitInput, setCustomLimitInput] = useState(
+    String(dailyLimitMinutes)
+  );
+  const [customLimitError, setCustomLimitError] = useState<string | null>(null);
+  const [showExportPreview, setShowExportPreview] = useState(false);
 
   useEffect(() => {
     setDraftName(customDisplayName ?? displayName);
   }, [customDisplayName, displayName]);
 
+  useEffect(() => {
+    setCustomLimitInput(String(dailyLimitMinutes));
+    setCustomLimitError(null);
+  }, [dailyLimitMinutes]);
+
   const permissionGranted = Boolean(usageSummary?.permissionGranted);
   const instagramInstalled = Boolean(usageSummary?.instagramInstalled);
   const trackingActive =
     consentStatus === 'accepted' && trackingEnabled && permissionGranted;
+
+  function handleApplyCustomLimit() {
+    const parsed = parseCustomDailyLimitInput(customLimitInput);
+    if (!parsed.valid || parsed.minutes === null) {
+      setCustomLimitError(parsed.error);
+      return;
+    }
+    setCustomLimitError(null);
+    onChangeDailyLimit(parsed.minutes);
+  }
 
   return (
     <ScrollView
@@ -298,7 +329,7 @@ export default function SettingsScreen({
         </View>
       </View>
 
-      {/* Daily Limit Selector */}
+      {/* Daily Limit Selector & Custom Target */}
       <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
         DAILY SCROLL TARGET
       </Text>
@@ -311,10 +342,13 @@ export default function SettingsScreen({
             <Text style={styles.settingTitle}>Daily Instagram target</Text>
             <Text style={styles.settingDetail}>
               Currently set to{' '}
-              {formatMinutesAsHoursAndMinutes(dailyLimitMinutes).compact} per day
+              {formatMinutesAsHoursAndMinutes(dailyLimitMinutes).compact} (
+              {dailyLimitMinutes} min) per day
             </Text>
           </View>
         </View>
+
+        {/* Preset pills */}
         <View style={styles.limitOptionsRow}>
           {DAILY_LIMIT_OPTIONS.map((opt) => {
             const active = dailyLimitMinutes === opt.minutes;
@@ -337,19 +371,95 @@ export default function SettingsScreen({
             );
           })}
         </View>
+
+        {/* Fine-grained Stepper + Custom Minute Input */}
+        <View style={styles.customTargetRow}>
+          <TouchableOpacity
+            style={styles.stepperBtn}
+            onPress={() =>
+              onChangeDailyLimit(
+                stepDailyLimitMinutes(dailyLimitMinutes, -DAILY_LIMIT_STEP_MINUTES)
+              )
+            }
+            activeOpacity={0.75}
+            accessibilityLabel="Decrease target by 5 minutes"
+          >
+            <Icon name="minus" size={13} color={COLORS.purple} />
+            <Text style={styles.stepperBtnText}>5m</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.stepperBtn}
+            onPress={() =>
+              onChangeDailyLimit(
+                stepDailyLimitMinutes(dailyLimitMinutes, DAILY_LIMIT_STEP_MINUTES)
+              )
+            }
+            activeOpacity={0.75}
+            accessibilityLabel="Increase target by 5 minutes"
+          >
+            <Icon name="plus" size={13} color={COLORS.purple} />
+            <Text style={styles.stepperBtnText}>5m</Text>
+          </TouchableOpacity>
+
+          <TextInput
+            style={styles.customLimitInput}
+            value={customLimitInput}
+            onChangeText={(val) => {
+              setCustomLimitInput(val);
+              if (customLimitError) setCustomLimitError(null);
+            }}
+            keyboardType="number-pad"
+            maxLength={3}
+            placeholder="Minutes"
+            placeholderTextColor="#a395b2"
+            returnKeyType="done"
+            onSubmitEditing={handleApplyCustomLimit}
+          />
+          <TouchableOpacity
+            style={styles.customLimitApplyBtn}
+            onPress={handleApplyCustomLimit}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.customLimitApplyText}>Set min</Text>
+          </TouchableOpacity>
+        </View>
+
+        {customLimitError ? (
+          <Text style={styles.customLimitErrorText}>{customLimitError}</Text>
+        ) : (
+          <Text style={styles.profileHint}>
+            Choose a preset or enter any custom target between {MIN_DAILY_LIMIT_MINUTES}m and{' '}
+            {MAX_DAILY_LIMIT_MINUTES}m.
+          </Text>
+        )}
       </View>
 
-      {/* Preferences List */}
+      {/* Preferences & Local Notifications */}
       <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
-        BOUNDARIES & PRIVACY
+        BOUNDARIES, REMINDERS & PRIVACY
       </Text>
       <View style={styles.settingsList}>
         <SettingRow
           iconName="bell"
           title="Daily gentle nudge"
-          detail="A non-shaming reminder when you reach 80% or 100% of your limit"
+          detail="A non-shaming local alert when you reach 80% or 100% of your limit"
           checked={settings.dailyGentleNudge}
           onChange={() => onToggleSetting('dailyGentleNudge')}
+        />
+        <SettingRow
+          iconName="star"
+          title="Mission reminders"
+          detail="Evening check-in reminder if today’s missions are still open"
+          checked={settings.missionReminders}
+          onChange={() => onToggleSetting('missionReminders')}
+        />
+        <SettingRow
+          iconName="flame"
+          title="Streak & grace-day reminders"
+          detail="Gentle heads-up before midnight to protect your daily streak"
+          checked={settings.streakReminders}
+          onChange={() => onToggleSetting('streakReminders')}
         />
         <SettingRow
           iconName="shield-check"
@@ -365,18 +475,69 @@ export default function SettingsScreen({
           checked={settings.weekendBreathingRoom}
           onChange={() => onToggleSetting('weekendBreathingRoom')}
         />
+
+        <View style={styles.notificationTestFooter}>
+          <Text style={styles.syncMetaText}>
+            Notifications respect Android system permissions and your toggle rules above.
+          </Text>
+          <TouchableOpacity
+            style={styles.actionBtnSecondary}
+            onPress={onSendTestNotification}
+            activeOpacity={0.8}
+          >
+            <Icon name="bell" size={13} color={COLORS.purple} />
+            <Text style={styles.actionBtnSecondaryText}>Send test nudge</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Local Data Deletion */}
+      {/* Local Data Export & Deletion */}
       <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
-        LOCAL DATA & HISTORY
+        LOCAL DATA, EXPORT & HISTORY
       </Text>
-      <View style={styles.dangerCard}>
+      <View style={styles.exportCard}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.settingTitle}>Export user data (JSON)</Text>
+          <Text style={styles.settingDetail}>
+            Export your structured local usage summaries, missions, streaks, weekly quests,
+            mood logs, and XP ledger as valid JSON.
+          </Text>
+        </View>
+        <View style={styles.exportBtnRow}>
+          <TouchableOpacity
+            style={styles.actionBtnPrimary}
+            onPress={onExportUserData}
+            activeOpacity={0.8}
+          >
+            <Icon name="share" size={13} color={COLORS.white} />
+            <Text style={styles.actionBtnPrimaryText}>Export / Share JSON</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBtnSecondary}
+            onPress={() => setShowExportPreview((prev) => !prev)}
+            activeOpacity={0.8}
+          >
+            <Icon name="file-text" size={13} color={COLORS.purple} />
+            <Text style={styles.actionBtnSecondaryText}>
+              {showExportPreview ? 'Hide JSON' : 'Preview JSON'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {showExportPreview && (
+          <View style={styles.jsonPreviewBox}>
+            <Text style={styles.jsonPreviewText} selectable>
+              {exportJsonPreview}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.dangerCard, { marginTop: 12 }]}>
         <View style={{ flex: 1 }}>
           <Text style={styles.settingTitle}>Delete local usage & mission history</Text>
           <Text style={styles.settingDetail}>
-            Clears cached usage summaries, completed missions, chests, and earned badges
-            stored on this device.
+            Clears cached usage summaries, completed missions, chests, streaks, mood logs,
+            and earned badges stored on this device.
           </Text>
         </View>
         <TouchableOpacity
@@ -560,6 +721,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#faf6fe',
     gap: 12,
   },
+  notificationTestFooter: {
+    padding: 14,
+    backgroundColor: '#faf6fe',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
   statusBadgesRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -622,6 +791,7 @@ const styles = StyleSheet.create({
     color: COLORS.purple,
   },
   syncMetaText: {
+    flex: 1,
     fontSize: 10,
     color: COLORS.muted,
     fontWeight: '600',
@@ -662,6 +832,83 @@ const styles = StyleSheet.create({
   },
   limitPillTextActive: {
     color: COLORS.white,
+  },
+  customTargetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  stepperBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 9,
+    paddingHorizontal: 11,
+    borderRadius: 10,
+    backgroundColor: '#ece3f8',
+  },
+  stepperBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  customLimitInput: {
+    flex: 1,
+    minWidth: 80,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#dfd3eb',
+    backgroundColor: '#faf6fe',
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  customLimitApplyBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.purple,
+  },
+  customLimitApplyText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  customLimitErrorText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
+
+  // Export Card
+  exportCard: {
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.xl,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    gap: 12,
+  },
+  exportBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  jsonPreviewBox: {
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: '#f8f2fa',
+    borderWidth: 1,
+    borderColor: '#e8dcf0',
+    maxHeight: 200,
+  },
+  jsonPreviewText: {
+    fontSize: 9,
+    fontFamily: 'monospace',
+    color: COLORS.ink,
+    lineHeight: 14,
   },
 
   // Danger / History

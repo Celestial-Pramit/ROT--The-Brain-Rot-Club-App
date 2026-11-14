@@ -21,6 +21,8 @@ const iconMap: Record<string, string> = {
   'bell': 'bell',
   'menu': 'menu',
   'chevron-right': 'chevron-right',
+  'chevron-down': 'chevron-down',
+  'chevron-up': 'chevron-up',
   'arrow-up-right': 'arrow-up-right',
   'x': 'x',
   'play': 'play',
@@ -35,6 +37,12 @@ const iconMap: Record<string, string> = {
   'alert-circle': 'alert-circle',
   'edit': 'edit-2',
   'user': 'user',
+  'share': 'share-2',
+  'download': 'download',
+  'plus': 'plus',
+  'minus': 'minus',
+  'calendar': 'calendar',
+  'file-text': 'file-text',
 };
 
 type Props = {

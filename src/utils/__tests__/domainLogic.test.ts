@@ -1,32 +1,46 @@
 import { assert, describe, it } from '../testHarness';
 import {
+  addLocalDays,
   buildUsageDisplayState,
   calculateBrainrotIndex,
   calculateEarnedXpForDate,
   calculateLimitProgress,
   calculateTotalXp,
   claimDailyChestState,
+  claimWeeklyQuestState,
   clampDailyLimitMinutes,
   clearLocalHistoryState,
   completeFocusBreakState,
   createInitialPersistedState,
+  evaluatePendingNotifications,
+  evaluateStreakState,
   formatFreshnessLabel,
   formatMinutesAsHoursAndMinutes,
   getEffectiveDailyLimitMinutes,
+  getLocalWeekKey,
   getMissionsForDate,
+  getWeeklyQuestState,
+  getXpLedgerEntries,
+  logDailyMoodState,
   MAX_DISPLAY_NAME_LENGTH,
+  parseCustomDailyLimitInput,
+  recoverStreakState,
   resolveEffectiveDisplayName,
   sanitizeDisplayName,
   selectCachedSummaryToPersist,
+  serializeUserDataExportJson,
   STALE_THRESHOLD_MS,
+  stepDailyLimitMinutes,
+  syncUsageLinkedMissionsState,
   toggleMissionState,
   updateCustomDisplayNameState,
   updateDeviceDefaultNameState,
+  verifyXpLedgerConsistency,
 } from '../domainLogic';
 import { getBadges } from '../../constants/data';
 import { InstagramUsageSummary, PersistedAppState } from '../../constants/types';
 
-describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', () => {
+describe('ROT Executive Demo & Core MVP - Domain Logic Test Suite', () => {
   it('Part B: Resolves device-name default, custom display name, blank-name validation, max length, and fallback', () => {
     const initial = createInitialPersistedState('2026-11-14', null);
     // 1. Fallback when neither custom nor device name exists
@@ -292,10 +306,26 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     assert.ok(revokedDisplay.staleOrIncompleteWarning?.includes('Usage Access was revoked'));
   });
 
-  it('AT-04 & AT-05: Computes daily limit progress, remaining time, and gentle nudges accurately', () => {
+  it('AT-04, AT-05 & Core MVP #4: Computes daily limit progress, custom target validation/stepping, and gentle nudges', () => {
     assert.equal(clampDailyLimitMinutes(5), 15);
     assert.equal(clampDailyLimitMinutes(120), 120);
     assert.equal(clampDailyLimitMinutes(999), 720);
+
+    // Stepper & custom input validation
+    assert.equal(stepDailyLimitMinutes(120, -5), 115);
+    assert.equal(stepDailyLimitMinutes(15, -10), 15);
+    assert.equal(stepDailyLimitMinutes(720, 10), 720);
+
+    const validCustom = parseCustomDailyLimitInput('75');
+    assert.equal(validCustom.valid, true);
+    assert.equal(validCustom.minutes, 75);
+
+    const invalidLow = parseCustomDailyLimitInput('10');
+    assert.equal(invalidLow.valid, false);
+    assert.ok(invalidLow.error?.includes('between 15m and 720m'));
+
+    const invalidNonNumeric = parseCustomDailyLimitInput('1h30m');
+    assert.equal(invalidNonNumeric.valid, false);
 
     const normalProgress = calculateLimitProgress(90 * 60 * 1000, 120, true);
     assert.equal(normalProgress.limitFormatted, '2h 00m');
@@ -321,14 +351,16 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     assert.equal(getEffectiveDailyLimitMinutes(120, false, saturday), 120);
   });
 
-  it('AT-06: Guarantees mission completion and daily chest XP rewards are strictly idempotent', () => {
+  it('AT-06 & Core MVP #7: Guarantees mission/chest XP idempotency and 100% XP Ledger consistency', () => {
     const dateKey = '2026-11-14';
     const initial = createInitialPersistedState(dateKey);
     const startXp = calculateTotalXp(initial);
+    assert.equal(verifyXpLedgerConsistency(initial).consistent, true);
 
     const firstComplete = toggleMissionState(initial, 0, dateKey);
     assert.equal(firstComplete.xpAwarded, 40);
     assert.equal(calculateTotalXp(firstComplete.nextState), startXp + 40);
+    assert.equal(verifyXpLedgerConsistency(firstComplete.nextState).consistent, true);
 
     const duplicateForceComplete = toggleMissionState(
       firstComplete.nextState,
@@ -351,6 +383,12 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     const secondChest = claimDailyChestState(firstChest.nextState, chestDate);
     assert.equal(secondChest.xpAwarded, 0);
     assert.equal(calculateTotalXp(secondChest.nextState), startXp + 40 + 50);
+
+    const consistency = verifyXpLedgerConsistency(secondChest.nextState);
+    assert.equal(consistency.consistent, true);
+    assert.equal(consistency.totalXp, startXp + 90);
+    assert.equal(consistency.ledgerSum, startXp + 90);
+    assert.equal(getXpLedgerEntries(secondChest.nextState).length, 3); // 2 earned + 1 baseline
   });
 
   it('FR-009 & FR-021: Completes focus break, awards XP once per session, and unlocks Offline Icon badge', () => {
@@ -360,6 +398,7 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     const breakRes = completeFocusBreakState(initial, 'session-abc', dateKey);
     assert.equal(breakRes.xpAwarded, 70);
     assert.equal(breakRes.nextState.completedFocusBreaks, 1);
+    assert.equal(verifyXpLedgerConsistency(breakRes.nextState).consistent, true);
 
     const missionsAfterBreak = getMissionsForDate(breakRes.nextState, dateKey);
     const badges = getBadges(
@@ -377,6 +416,263 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     );
     assert.equal(duplicateBreak.xpAwarded, 0);
     assert.equal(duplicateBreak.nextState.completedFocusBreaks, 1);
+  });
+
+  it('Core MVP #1: Streak & Grace-Day Engine handles consecutive days, grace-day consumption, streak break, recovery, and weekly reset', () => {
+    const day1 = '2026-11-09'; // Monday
+    const day2 = addLocalDays(day1, 1); // Tuesday
+    const day3 = addLocalDays(day1, 2); // Wednesday
+    const day4 = addLocalDays(day1, 3); // Thursday
+    const day5 = addLocalDays(day1, 4); // Friday
+
+    let state = createInitialPersistedState(day1);
+    state = { ...state, consentStatus: 'accepted', trackingEnabled: true };
+    // Day 1: Complete mission 0 ("Touch some grass")
+    state = toggleMissionState(state, 0, day1).nextState;
+    assert.equal(state.streak.currentStreak, 1);
+    assert.equal(state.streak.graceDaysRemaining, 1);
+
+    // Day 2: Complete mission 0 -> streak becomes 2
+    state = toggleMissionState(state, 0, day2).nextState;
+    assert.equal(state.streak.currentStreak, 2);
+    assert.equal(state.streak.longestStreak, 2);
+
+    // Day 3 is missed (no activity), evaluate on Day 4 -> consumes 1 Grace Day and preserves streak = 2
+    state = evaluateStreakState(state, day4);
+    assert.equal(state.streak.graceDaysRemaining, 0);
+    assert.equal(state.streak.historyByDate[day3], 'grace_used');
+    assert.equal(state.streak.currentStreak, 2);
+    assert.equal(state.streak.recoveryNeeded, false);
+
+    // Day 4 is also missed (graceDaysRemaining is now 0), evaluate on Day 5 -> streak breaks!
+    state = evaluateStreakState(state, day5);
+    assert.equal(state.streak.historyByDate[day4], 'missed');
+    assert.equal(state.streak.currentStreak, 0);
+    assert.equal(state.streak.recoveryNeeded, true);
+    assert.equal(state.streak.previousStreakBeforeBreak, 2);
+
+    // Attempt recovery before doing an action on Day 5 -> blocked
+    const prematureRecovery = recoverStreakState(state, day5);
+    assert.equal(prematureRecovery.xpAwarded, 0);
+    assert.equal(prematureRecovery.nextState.streak.recoveryNeeded, true);
+
+    // Complete a mission on Day 5, then recover streak -> restores previousStreak (2) + today (1) = 3, awards +25 XP
+    state = toggleMissionState(state, 0, day5).nextState;
+    const recovered = recoverStreakState(state, day5);
+    assert.equal(recovered.xpAwarded, 25);
+    assert.equal(recovered.nextState.streak.currentStreak, 3);
+    assert.equal(recovered.nextState.streak.recoveryNeeded, false);
+    assert.equal(recovered.nextState.streak.recoveredThisWeek, true);
+    assert.equal(verifyXpLedgerConsistency(recovered.nextState).consistent, true);
+
+    // Next Monday resets graceDaysRemaining to 1
+    const nextMonday = '2026-11-16';
+    assert.ok(getLocalWeekKey(day1) !== getLocalWeekKey(nextMonday));
+    const nextWeekState = toggleMissionState(recovered.nextState, 0, nextMonday).nextState;
+    assert.equal(nextWeekState.streak.graceDaysRemaining, 1);
+    assert.equal(nextWeekState.streak.recoveredThisWeek, false);
+  });
+
+  it('Core MVP #2: Usage-Linked Missions auto-complete from verified usage and reject fake progress when permission is missing', () => {
+    const dateKey = '2026-11-14';
+    const now = new Date('2026-11-14T16:00:00').getTime();
+    let state = createInitialPersistedState(dateKey);
+
+    // 1. Missing permission -> does not auto-complete, manual click is blocked
+    const missingDisplay = buildUsageDisplayState(null, 'pending', true, now);
+    const syncMissing = syncUsageLinkedMissionsState(state, missingDisplay, 120, dateKey);
+    assert.equal(syncMissing.xpAwarded, 0);
+
+    const missionsMissing = getMissionsForDate(state, dateKey, missingDisplay, 120);
+    const stayUnderIdx = missionsMissing.findIndex((m) => m.id === 'stay-under-target');
+    assert.equal(missionsMissing[stayUnderIdx].done, false);
+    assert.equal(missionsMissing[stayUnderIdx].progressLabel, 'Requires Usage Access');
+
+    const manualAttempt = toggleMissionState(
+      state,
+      stayUnderIdx,
+      dateKey,
+      false,
+      missingDisplay,
+      120
+    );
+    assert.equal(manualAttempt.xpAwarded, 0);
+    assert.ok(manualAttempt.toastMessage.includes('Grant Usage Access'));
+
+    // 2. Verified usage within target (45m <= 120m) -> auto-completes and awards +45 XP once
+    state = { ...state, consentStatus: 'accepted', trackingEnabled: true };
+    const verifiedUnderSummary: InstagramUsageSummary = {
+      status: 'ok',
+      statusReason: 'estimated Instagram foreground time',
+      permissionGranted: true,
+      instagramInstalled: true,
+      todayForegroundMs: 45 * 60 * 1000,
+      queriedAtMs: now,
+      dailyBreakdown: [],
+      isComplete: true,
+    };
+    const verifiedDisplay = buildUsageDisplayState(
+      verifiedUnderSummary,
+      'accepted',
+      true,
+      now
+    );
+    const autoSynced = syncUsageLinkedMissionsState(
+      state,
+      verifiedDisplay,
+      120,
+      dateKey
+    );
+    assert.equal(autoSynced.xpAwarded, 45);
+    const updatedMissions = getMissionsForDate(
+      autoSynced.nextState,
+      dateKey,
+      verifiedDisplay,
+      120
+    );
+    assert.equal(updatedMissions[stayUnderIdx].done, true);
+
+    // Duplicate sync awards 0 XP
+    const secondSync = syncUsageLinkedMissionsState(
+      autoSynced.nextState,
+      verifiedDisplay,
+      120,
+      dateKey
+    );
+    assert.equal(secondSync.xpAwarded, 0);
+  });
+
+  it('Core MVP #3: Weekly Quests track progress across the week, award completion XP idempotently, and reset on a new week', () => {
+    const mon = '2026-11-09';
+    const tue = '2026-11-10';
+    const wed = '2026-11-11';
+    let state = createInitialPersistedState(mon);
+
+    // Complete 1 mission on Mon, Tue, Wed -> completes 'balanced-week' (target: 3)
+    state = toggleMissionState(state, 0, mon).nextState;
+    state = toggleMissionState(state, 0, tue).nextState;
+
+    let weekly = getWeeklyQuestState(state, tue);
+    const balancedBefore = weekly.quests.find((q) => q.id === 'balanced-week')!;
+    assert.equal(balancedBefore.progress, 2);
+    assert.equal(balancedBefore.completed, false);
+
+    // Claiming before completion awards 0 XP
+    const prematureClaim = claimWeeklyQuestState(state, 'balanced-week', tue);
+    assert.equal(prematureClaim.xpAwarded, 0);
+
+    state = toggleMissionState(state, 0, wed).nextState;
+    weekly = getWeeklyQuestState(state, wed);
+    const balancedAfter = weekly.quests.find((q) => q.id === 'balanced-week')!;
+    assert.equal(balancedAfter.progress, 3);
+    assert.equal(balancedAfter.completed, true);
+
+    // Claim reward (+90 XP)
+    const claimRes = claimWeeklyQuestState(state, 'balanced-week', wed);
+    assert.equal(claimRes.xpAwarded, 90);
+    assert.equal(verifyXpLedgerConsistency(claimRes.nextState).consistent, true);
+
+    // Duplicate claim in same week awards 0 XP
+    const dupClaim = claimWeeklyQuestState(claimRes.nextState, 'balanced-week', wed);
+    assert.equal(dupClaim.xpAwarded, 0);
+
+    // New week resets quest progress to 0
+    const nextWeekMon = '2026-11-16';
+    const nextWeekQuests = getWeeklyQuestState(claimRes.nextState, nextWeekMon);
+    assert.ok(nextWeekQuests.weekKey !== weekly.weekKey);
+    assert.equal(
+      nextWeekQuests.quests.find((q) => q.id === 'balanced-week')?.progress,
+      0
+    );
+    assert.equal(
+      nextWeekQuests.quests.find((q) => q.id === 'balanced-week')?.claimed,
+      false
+    );
+  });
+
+  it('Core MVP #5, #6 & #8: Evaluates local notifications, logs daily mood with Brainrot breakdown, and exports valid JSON', () => {
+    const dateKey = '2026-11-14';
+    const now = new Date('2026-11-14T19:00:00').getTime();
+    let state = createInitialPersistedState(dateKey, 'Redmi 11 Prime');
+    state = { ...state, consentStatus: 'accepted', trackingEnabled: true };
+
+    // 1. Mood logging completes brain-check-in (+25 XP) and updates Brainrot Index mood
+    const moodRes = logDailyMoodState(
+      state,
+      'curious',
+      'Reading 20 pages tonight',
+      dateKey
+    );
+    assert.equal(moodRes.xpAwarded, 25);
+    state = moodRes.nextState;
+    assert.equal(state.moodLogsByDate[dateKey]?.label, 'Chill but curious');
+    assert.equal(state.moodLogsByDate[dateKey]?.note, 'Reading 20 pages tonight');
+
+    const indexWithMood = calculateBrainrotIndex(
+      45 * 60 * 1000,
+      120,
+      true,
+      2,
+      1,
+      state.moodLogsByDate[dateKey]
+    );
+    assert.ok(indexWithMood.score !== null && indexWithMood.score >= 70);
+    assert.equal(indexWithMood.moodValue, 'Chill but curious');
+    assert.equal(indexWithMood.breakdown.missionBonus, 8);
+    assert.equal(indexWithMood.breakdown.focusBreakBonus, 3);
+    assert.equal(indexWithMood.breakdown.usageRatioPercent, 38);
+
+    // 2. Local notification evaluation (near limit 85% -> fires limit_80 once, never duplicates)
+    const summary85: InstagramUsageSummary = {
+      status: 'ok',
+      statusReason: 'estimated Instagram foreground time',
+      permissionGranted: true,
+      instagramInstalled: true,
+      todayForegroundMs: 102 * 60 * 1000,
+      queriedAtMs: now,
+      dailyBreakdown: [],
+      isComplete: true,
+    };
+    const display85 = buildUsageDisplayState(summary85, 'accepted', true, now);
+    const progress85 = calculateLimitProgress(
+      summary85.todayForegroundMs,
+      120,
+      display85.hasVerifiedEstimate
+    );
+
+    const firstEval = evaluatePendingNotifications(
+      state,
+      display85,
+      progress85,
+      dateKey,
+      19
+    );
+    assert.equal(
+      firstEval.notifications.some((n) => n.category === 'limit_80'),
+      true
+    );
+
+    const secondEval = evaluatePendingNotifications(
+      firstEval.nextState,
+      display85,
+      progress85,
+      dateKey,
+      19
+    );
+    assert.equal(secondEval.notifications.length, 0);
+
+    // 3. Structured JSON Export validation
+    const exportRes = serializeUserDataExportJson(firstEval.nextState, '2026-11-14T19:05:00.000Z');
+    assert.equal(exportRes.ok, true);
+    assert.equal(exportRes.filename, 'rot-brainrot-export-2026-11-14.json');
+    const parsedExport = JSON.parse(exportRes.json);
+    assert.equal(parsedExport.format, 'rot-user-data-export-v1');
+    assert.equal(parsedExport.profile.effectiveDisplayName, 'Redmi 11 Prime');
+    assert.equal(parsedExport.xpSummary.ledgerConsistent, true);
+    assert.equal(
+      parsedExport.moodLogsByDate[dateKey].note,
+      'Reading 20 pages tonight'
+    );
   });
 
   it('AT-08 & Cold-Restart Serialization: Preserves custom profile, consent, and XP across JSON serialization and clears local history cleanly', () => {
@@ -415,11 +711,14 @@ describe('ROT Executive Demo - Domain Logic, User Identity & Data-State Tests', 
     assert.equal(cleared.completedFocusBreaks, 0);
     assert.deepEqual(cleared.claimedXpEvents, {});
     assert.deepEqual(cleared.unlockedBadges, {});
+    assert.deepEqual(cleared.moodLogsByDate, {});
+    assert.deepEqual(cleared.xpLedger, []);
   });
 
   it('FR-007: Computes Brainrot Index honestly when data is present vs. missing', () => {
     const missingIndex = calculateBrainrotIndex(null, 120, false, 1, 0);
     assert.equal(missingIndex.score, null);
+    assert.equal(missingIndex.breakdown.finalScore, null);
 
     const healthyIndex = calculateBrainrotIndex(45 * 60 * 1000, 120, true, 2, 1);
     assert.ok(healthyIndex.score !== null && healthyIndex.score >= 70);

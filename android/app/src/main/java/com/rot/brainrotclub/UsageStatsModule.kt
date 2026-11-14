@@ -1,6 +1,9 @@
 package com.rot.brainrotclub
 
 import android.app.AppOpsManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
@@ -10,6 +13,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -29,6 +35,8 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
     companion object {
         const val NAME = "RotUsageStats"
         const val INSTAGRAM_PACKAGE = "com.instagram.android"
+        const val NOTIFICATION_CHANNEL_ID = "rot_wellbeing_nudges"
+        const val NOTIFICATION_CHANNEL_NAME = "ROT Gentle Nudges & Reminders"
         private const val MAX_SINGLE_SESSION_MS = 4 * 60 * 60 * 1000L // 4-hour cap against missing stop events
         private const val SESSION_GAP_MERGE_MS = 1500L // Merge sub-1.5s intra-app activity transitions
     }
@@ -190,6 +198,99 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 putInt("sdkInt", Build.VERSION.SDK_INT)
             }
             promise.resolve(map)
+        }
+    }
+
+    private fun ensureNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    ?: return
+            val existing = manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID)
+            if (existing == null) {
+                val channel = NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    NOTIFICATION_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Gentle scroll target nudges, mission reminders, and streak check-ins"
+                }
+                manager.createNotificationChannel(channel)
+            }
+        }
+    }
+
+    private fun checkNotificationsAllowed(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return false
+        }
+        return NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+
+    @ReactMethod
+    fun areNotificationsEnabled(promise: Promise) {
+        try {
+            promise.resolve(checkNotificationsAllowed(reactApplicationContext))
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun postLocalNotification(
+        notificationId: Int,
+        title: String,
+        body: String,
+        promise: Promise
+    ) {
+        try {
+            val context = reactApplicationContext
+            if (!checkNotificationsAllowed(context)) {
+                promise.resolve(false)
+                return
+            }
+            ensureNotificationChannel(context)
+
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = if (launchIntent != null) {
+                PendingIntent.getActivity(context, notificationId, launchIntent, pendingFlags)
+            } else {
+                null
+            }
+
+            val iconRes = if (context.applicationInfo.icon != 0) {
+                context.applicationInfo.icon
+            } else {
+                android.R.drawable.ic_dialog_info
+            }
+
+            val builder = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(iconRes)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+
+            if (pendingIntent != null) {
+                builder.setContentIntent(pendingIntent)
+            }
+
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+            promise.resolve(true)
+        } catch (_: SecurityException) {
+            promise.resolve(false)
+        } catch (_: Exception) {
+            promise.resolve(false)
         }
     }
 

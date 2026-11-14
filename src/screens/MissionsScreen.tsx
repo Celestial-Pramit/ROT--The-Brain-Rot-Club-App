@@ -1,7 +1,18 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+} from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
-import { Mission } from '../constants/types';
+import {
+  Mission,
+  WeeklyQuestId,
+  WeeklyQuestState,
+  XpLedgerEntry,
+} from '../constants/types';
 import MissionRow from '../components/MissionRow';
 import Icon from '../components/Icon';
 
@@ -9,9 +20,23 @@ type Props = {
   missions: Mission[];
   onMissionClick: (index: number) => void;
   earnedXp: number;
+  totalXp: number;
+  weeklyQuestState: WeeklyQuestState;
+  onClaimWeeklyQuest: (questId: WeeklyQuestId) => void;
+  xpLedger: XpLedgerEntry[];
+  ledgerConsistent: boolean;
 };
 
-export default function MissionsScreen({ missions, onMissionClick, earnedXp }: Props) {
+export default function MissionsScreen({
+  missions,
+  onMissionClick,
+  earnedXp,
+  totalXp,
+  weeklyQuestState,
+  onClaimWeeklyQuest,
+  xpLedger,
+  ledgerConsistent,
+}: Props) {
   const completedCount = missions.filter((m) => m.done).length;
   const grassUnlocked = completedCount >= 2;
 
@@ -34,7 +59,7 @@ export default function MissionsScreen({ missions, onMissionClick, earnedXp }: P
       <View style={styles.xpBadge}>
         <Icon name="trophy" size={18} color={COLORS.yellow} />
         <Text style={styles.xpValue}>{earnedXp} XP</Text>
-        <Text style={styles.xpLabel}>earned today</Text>
+        <Text style={styles.xpLabel}>earned today · {totalXp} total XP</Text>
       </View>
 
       {/* Quest Hero */}
@@ -107,6 +132,124 @@ export default function MissionsScreen({ missions, onMissionClick, earnedXp }: P
             {grassUnlocked ? 'UNLOCKED' : 'LOCKED'}
           </Text>
         </View>
+      </View>
+
+      {/* Weekly Quests Section */}
+      <View style={styles.sectionHeader}>
+        <View>
+          <Text style={styles.eyebrow}>WEEKLY CHALLENGES</Text>
+          <Text style={styles.sectionTitle}>Weekly quests</Text>
+        </View>
+        <View style={styles.weekKeyPill}>
+          <Icon name="calendar" size={11} color={COLORS.purple} />
+          <Text style={styles.weekKeyText}>
+            {weeklyQuestState.weekKey.replace('week-', 'Week of ')}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.weeklyList}>
+        {weeklyQuestState.quests.map((quest) => {
+          const pct = Math.min(
+            100,
+            Math.round((quest.progress / Math.max(1, quest.target)) * 100)
+          );
+          return (
+            <View key={quest.id} style={styles.weeklyCard}>
+              <View style={styles.weeklyTopRow}>
+                <View style={styles.weeklyIconWrap}>
+                  <Icon name={quest.iconName} size={16} color={COLORS.purple} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.weeklyTitle}>{quest.title}</Text>
+                  <Text style={styles.weeklyDetail}>{quest.detail}</Text>
+                </View>
+                {quest.claimed ? (
+                  <View style={styles.claimedPill}>
+                    <Icon name="check" size={12} color="#2d9364" />
+                    <Text style={styles.claimedPillText}>CLAIMED</Text>
+                  </View>
+                ) : quest.completed ? (
+                  <TouchableOpacity
+                    style={styles.claimQuestBtn}
+                    onPress={() => onClaimWeeklyQuest(quest.id)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.claimQuestBtnText}>
+                      Claim +{quest.rewardXp} XP
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={styles.weeklyReward}>+{quest.rewardXp} XP</Text>
+                )}
+              </View>
+              <View style={styles.weeklyProgressRow}>
+                <View style={styles.weeklyTrack}>
+                  <View
+                    style={[
+                      styles.weeklyFill,
+                      { width: `${pct}%` as any },
+                      quest.completed && { backgroundColor: COLORS.green },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.weeklyCountText}>
+                  {quest.progress}/{quest.target}
+                </Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* XP Ledger Section */}
+      <View style={styles.sectionHeader}>
+        <View>
+          <Text style={styles.eyebrow}>TRANSACTION HISTORY</Text>
+          <Text style={styles.sectionTitle}>Brain Bank XP Ledger</Text>
+        </View>
+        <View
+          style={[
+            styles.ledgerBadge,
+            !ledgerConsistent && { backgroundColor: '#fff1d8' },
+          ]}
+        >
+          <Icon
+            name="shield-check"
+            size={11}
+            color={ledgerConsistent ? '#2d9364' : COLORS.orange}
+          />
+          <Text
+            style={[
+              styles.ledgerBadgeText,
+              !ledgerConsistent && { color: COLORS.orange },
+            ]}
+          >
+            {ledgerConsistent ? `Verified · ${totalXp} XP` : `${totalXp} XP`}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.ledgerCard}>
+        {xpLedger.slice(0, 10).map((entry, idx) => (
+          <View
+            key={entry.id}
+            style={[
+              styles.ledgerRow,
+              idx === Math.min(xpLedger.length, 10) - 1 && {
+                borderBottomWidth: 0,
+              },
+            ]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.ledgerTitle}>{entry.title}</Text>
+              <Text style={styles.ledgerMeta}>
+                {entry.category.replace('_', ' ').toUpperCase()} · {entry.dateKey}
+              </Text>
+            </View>
+            <Text style={styles.ledgerAmount}>+{entry.amount} XP</Text>
+          </View>
+        ))}
       </View>
     </ScrollView>
   );
@@ -242,5 +385,170 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.8,
     color: COLORS.muted,
+  },
+
+  // Weekly Quests
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.ink,
+    letterSpacing: -0.5,
+    marginTop: 2,
+  },
+  weekKeyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: '#f1eaf9',
+  },
+  weekKeyText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  weeklyList: {
+    gap: 11,
+  },
+  weeklyCard: {
+    padding: 15,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.lg,
+    gap: 10,
+  },
+  weeklyTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  weeklyIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.lavender,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  weeklyTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  weeklyDetail: {
+    fontSize: 11,
+    color: COLORS.muted,
+    marginTop: 2,
+  },
+  weeklyReward: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
+  claimQuestBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    borderRadius: 12,
+    backgroundColor: COLORS.pink,
+  },
+  claimQuestBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  claimedPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 12,
+    backgroundColor: '#e4f8ee',
+  },
+  claimedPillText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#2d9364',
+  },
+  weeklyProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  weeklyTrack: {
+    flex: 1,
+    height: 7,
+    borderRadius: 7,
+    backgroundColor: '#f1eaf9',
+    overflow: 'hidden',
+  },
+  weeklyFill: {
+    height: '100%',
+    borderRadius: 7,
+    backgroundColor: COLORS.purple,
+  },
+  weeklyCountText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.muted,
+  },
+
+  // XP Ledger
+  ledgerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: '#e4f8ee',
+  },
+  ledgerBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#2d9364',
+  },
+  ledgerCard: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.lg,
+    overflow: 'hidden',
+  },
+  ledgerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f2ebf4',
+    gap: 10,
+  },
+  ledgerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  ledgerMeta: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: COLORS.muted,
+    marginTop: 2,
+  },
+  ledgerAmount: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.purple,
   },
 });

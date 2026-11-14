@@ -9,6 +9,7 @@ import {
   Platform,
   AppState,
   AppStateStatus,
+  Share,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -17,9 +18,11 @@ import {
   Badge,
   Celebration,
   InstagramUsageSummary,
+  MoodId,
   PersistedAppState,
   UserSettings,
   View as ViewType,
+  WeeklyQuestId,
 } from './src/constants/types';
 import { getBadges } from './src/constants/data';
 import {
@@ -29,26 +32,37 @@ import {
   calculateLimitProgress,
   calculateTotalXp,
   claimDailyChestState,
+  claimWeeklyQuestState,
   clampDailyLimitMinutes,
   clearLocalHistoryState,
   completeFocusBreakState,
   createInitialPersistedState,
+  evaluatePendingNotifications,
   formatMinutesAsHoursAndMinutes,
   getDailyChestForDate,
   getEffectiveDailyLimitMinutes,
   getLocalDateKey,
   getMissionsForDate,
+  getWeeklyQuestState,
+  getXpLedgerEntries,
+  logDailyMoodState,
+  recoverStreakState,
   resolveEffectiveDisplayName,
   selectCachedSummaryToPersist,
+  serializeUserDataExportJson,
+  syncUsageLinkedMissionsState,
   toggleMissionState,
   updateCustomDisplayNameState,
   updateDeviceDefaultNameState,
+  verifyXpLedgerConsistency,
 } from './src/utils/domainLogic';
 import { loadPersistedState, savePersistedState } from './src/utils/storage';
 import {
+  checkAndRequestNotificationPermission,
   openAndroidUsageAccessSettings,
   queryDeviceProfileInfo,
   queryInstagramUsageSummary,
+  sendLocalNotification,
 } from './src/utils/usageStats';
 import TodayScreen from './src/screens/TodayScreen';
 import MissionsScreen from './src/screens/MissionsScreen';
@@ -110,20 +124,40 @@ export default function App() {
       lastAutoRefreshAtRef.current = Date.now();
       const summary = await queryInstagramUsageSummary(7);
       setUsageSummary(summary);
+      const todayKey = getLocalDateKey();
       updateAndPersist((prev) => {
         let next = prev;
         if (summary.deviceName) {
           next = updateDeviceDefaultNameState(next, summary.deviceName);
         }
-        return {
+        const nextCached = selectCachedSummaryToPersist(
+          next.cachedUsageSummary,
+          summary,
+          next.consentStatus,
+          next.trackingEnabled
+        );
+        next = {
           ...next,
-          cachedUsageSummary: selectCachedSummaryToPersist(
-            next.cachedUsageSummary,
-            summary,
-            next.consentStatus,
-            next.trackingEnabled
-          ),
+          cachedUsageSummary: nextCached,
         };
+        const effLimit = getEffectiveDailyLimitMinutes(
+          next.dailyLimitMinutes,
+          next.settings.weekendBreathingRoom
+        );
+        const display = buildUsageDisplayState(
+          summary,
+          next.consentStatus,
+          next.trackingEnabled,
+          Date.now(),
+          nextCached
+        );
+        const linkedRes = syncUsageLinkedMissionsState(
+          next,
+          display,
+          effLimit,
+          todayKey
+        );
+        return linkedRes.nextState;
       });
       if (showFeedbackToast) {
         if (!summary.permissionGranted) {
@@ -170,19 +204,38 @@ export default function App() {
       const liveSummary = await queryInstagramUsageSummary(7);
       if (!mounted) return;
       setUsageSummary(liveSummary);
+      const todayKey = getLocalDateKey();
       updateAndPersist((prev) => {
         const withDevice = liveSummary.deviceName
           ? updateDeviceDefaultNameState(prev, liveSummary.deviceName)
           : prev;
-        return {
+        const nextCached = selectCachedSummaryToPersist(
+          withDevice.cachedUsageSummary,
+          liveSummary,
+          withDevice.consentStatus,
+          withDevice.trackingEnabled
+        );
+        const withCache: PersistedAppState = {
           ...withDevice,
-          cachedUsageSummary: selectCachedSummaryToPersist(
-            withDevice.cachedUsageSummary,
-            liveSummary,
-            withDevice.consentStatus,
-            withDevice.trackingEnabled
-          ),
+          cachedUsageSummary: nextCached,
         };
+        const effLimit = getEffectiveDailyLimitMinutes(
+          withCache.dailyLimitMinutes,
+          withCache.settings.weekendBreathingRoom
+        );
+        const display = buildUsageDisplayState(
+          liveSummary,
+          withCache.consentStatus,
+          withCache.trackingEnabled,
+          Date.now(),
+          nextCached
+        );
+        return syncUsageLinkedMissionsState(
+          withCache,
+          display,
+          effLimit,
+          todayKey
+        ).nextState;
       });
 
       // Prompt consent modal on initial launch if still pending
@@ -249,19 +302,6 @@ export default function App() {
   }, [toast, toastOpacity, toastTranslateY]);
 
   const dateKey = getLocalDateKey();
-  const missions = getMissionsForDate(appState, dateKey);
-  const completedMissions = missions.filter((m) => m.done).length;
-  const dailyChest = getDailyChestForDate(appState);
-  const totalXp = calculateTotalXp(appState);
-  const earnedTodayXp = calculateEarnedXpForDate(appState, dateKey);
-  const badges = getBadges(
-    missions,
-    appState.completedFocusBreaks,
-    appState.unlockedBadges
-  );
-
-  const identity = resolveEffectiveDisplayName(appState.profile);
-
   const effectiveLimitMinutes = getEffectiveDailyLimitMinutes(
     appState.dailyLimitMinutes,
     appState.settings.weekendBreathingRoom
@@ -275,6 +315,32 @@ export default function App() {
     appState.cachedUsageSummary
   );
 
+  const missions = getMissionsForDate(
+    appState,
+    dateKey,
+    usageDisplay,
+    effectiveLimitMinutes
+  );
+  const completedMissions = missions.filter((m) => m.done).length;
+  const dailyChest = getDailyChestForDate(appState);
+  const totalXp = calculateTotalXp(appState);
+  const earnedTodayXp = calculateEarnedXpForDate(appState, dateKey);
+  const badges = getBadges(
+    missions,
+    appState.completedFocusBreaks,
+    appState.unlockedBadges
+  );
+  const weeklyQuestState = getWeeklyQuestState(appState, dateKey);
+  const xpLedger = getXpLedgerEntries(appState);
+  const ledgerConsistency = verifyXpLedgerConsistency(appState);
+
+  const todayMoodLog = appState.moodLogsByDate?.[dateKey] ?? null;
+  const recentMoodLogs = Object.values(appState.moodLogsByDate ?? {}).sort((a, b) =>
+    b.dateKey.localeCompare(a.dateKey)
+  );
+
+  const identity = resolveEffectiveDisplayName(appState.profile);
+
   const limitProgress = calculateLimitProgress(
     usageSummary?.todayForegroundMs ?? null,
     effectiveLimitMinutes,
@@ -286,8 +352,36 @@ export default function App() {
     effectiveLimitMinutes,
     usageDisplay.hasVerifiedEstimate,
     completedMissions,
-    appState.completedFocusBreaks
+    appState.completedFocusBreaks,
+    todayMoodLog
   );
+
+  // Evaluate and fire pending local notifications once per day when thresholds are met
+  useEffect(() => {
+    if (!hydrated) return;
+    const evalRes = evaluatePendingNotifications(
+      appStateRef.current,
+      usageDisplay,
+      limitProgress,
+      dateKey
+    );
+    if (evalRes.notifications.length > 0) {
+      updateAndPersist(() => evalRes.nextState);
+      void (async () => {
+        const allowed = await checkAndRequestNotificationPermission();
+        if (!allowed) return;
+        for (const n of evalRes.notifications) {
+          await sendLocalNotification(n.id, n.title, n.body);
+        }
+      })();
+    }
+  }, [
+    hydrated,
+    usageDisplay,
+    limitProgress,
+    dateKey,
+    updateAndPersist,
+  ]);
 
   function handleSaveDisplayName(rawName: string | null) {
     const res = updateCustomDisplayNameState(appStateRef.current, rawName);
@@ -300,7 +394,47 @@ export default function App() {
   }
 
   function handleToggleMission(index: number) {
-    const result = toggleMissionState(appStateRef.current, index, dateKey);
+    const result = toggleMissionState(
+      appStateRef.current,
+      index,
+      dateKey,
+      false,
+      usageDisplay,
+      effectiveLimitMinutes
+    );
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleClaimWeeklyQuest(questId: WeeklyQuestId) {
+    const result = claimWeeklyQuestState(appStateRef.current, questId, dateKey);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleRecoverStreak() {
+    const result = recoverStreakState(appStateRef.current, dateKey);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleLogMood(moodId: MoodId, note: string) {
+    const result = logDailyMoodState(appStateRef.current, moodId, note, dateKey);
     updateAndPersist(() => result.nextState);
     if (result.celebration) {
       setCelebration(result.celebration);
@@ -419,13 +553,23 @@ export default function App() {
       const limitIdx = currentMissions.findIndex(
         (m) => m.id === 'set-scroll-limit'
       );
-      let next = {
+      let next: PersistedAppState = {
         ...prev,
         dailyLimitMinutes: clamped,
       };
       if (limitIdx >= 0 && !currentMissions[limitIdx].done) {
         next = toggleMissionState(next, limitIdx, dateKey, true).nextState;
       }
+      const effLimit = getEffectiveDailyLimitMinutes(
+        clamped,
+        next.settings.weekendBreathingRoom
+      );
+      next = syncUsageLinkedMissionsState(
+        next,
+        usageDisplay,
+        effLimit,
+        dateKey
+      ).nextState;
       return next;
     });
     setToast(
@@ -453,6 +597,44 @@ export default function App() {
     setToast('Local usage cache and mission history cleared.');
   }
 
+  async function handleExportUserData() {
+    const exported = serializeUserDataExportJson(appStateRef.current);
+    if (!exported.ok) {
+      setToast(exported.error || 'Could not generate JSON export.');
+      return;
+    }
+    try {
+      await Share.share({
+        title: exported.filename,
+        message: exported.json,
+      });
+      setToast(`Exported ${exported.filename} (${exported.json.length} bytes).`);
+    } catch {
+      setToast('Export ready in preview—share sheet was closed.');
+    }
+  }
+
+  async function handleSendTestNotification() {
+    const allowed = await checkAndRequestNotificationPermission();
+    if (!allowed) {
+      setToast('Enable Android notification permission for ROT to receive nudges.');
+      return;
+    }
+    const sent = await sendLocalNotification(
+      1999,
+      'ROT Gentle Nudge',
+      limitProgress.nudgeMessage ||
+        `Your daily scroll target is ${limitProgress.limitFormatted}. Keep choosing balance!`
+    );
+    if (sent) {
+      setToast('Test notification sent to your Android notification shade.');
+    } else {
+      setToast('Notification queued (check system notification settings).');
+    }
+  }
+
+  const exportPreviewResult = serializeUserDataExportJson(appState);
+
   function renderScreen() {
     switch (activeView) {
       case 'Today':
@@ -479,6 +661,11 @@ export default function App() {
             showGentleNudge={appState.settings.dailyGentleNudge}
             onUsageAction={handleUsageAction}
             onRefreshUsage={() => void syncUsageStats(true)}
+            streak={appState.streak}
+            onRecoverStreak={handleRecoverStreak}
+            todayMoodLog={todayMoodLog}
+            recentMoodLogs={recentMoodLogs}
+            onLogMood={handleLogMood}
           />
         );
       case 'Missions':
@@ -487,6 +674,11 @@ export default function App() {
             missions={missions}
             onMissionClick={handleToggleMission}
             earnedXp={earnedTodayXp}
+            totalXp={totalXp}
+            weeklyQuestState={weeklyQuestState}
+            onClaimWeeklyQuest={handleClaimWeeklyQuest}
+            xpLedger={xpLedger}
+            ledgerConsistent={ledgerConsistency.consistent}
           />
         );
       case 'Badges':
@@ -559,6 +751,9 @@ export default function App() {
             onToggleSetting={handleToggleSetting}
             onClearLocalHistory={handleClearLocalHistory}
             onRefreshUsage={() => void syncUsageStats(true)}
+            onExportUserData={() => void handleExportUserData()}
+            exportJsonPreview={exportPreviewResult.json}
+            onSendTestNotification={() => void handleSendTestNotification()}
           />
         );
     }
@@ -566,122 +761,122 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
-      <StatusBar barStyle="dark-content" />
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
+        <StatusBar barStyle="dark-content" />
 
-      {/* Top Bar */}
-      <View style={styles.topBar}>
-        <View style={styles.brandLockup}>
-          <View style={styles.brandMark}>
-            <Icon name="brain" size={16} color={COLORS.white} />
+        {/* Top Bar */}
+        <View style={styles.topBar}>
+          <View style={styles.brandLockup}>
+            <View style={styles.brandMark}>
+              <Icon name="brain" size={16} color={COLORS.white} />
+            </View>
+            <View>
+              <Text style={styles.brandName}>ROT.</Text>
+              <Text style={styles.brandCaption}>The Brainrot Club</Text>
+            </View>
           </View>
-          <View>
-            <Text style={styles.brandName}>ROT.</Text>
-            <Text style={styles.brandCaption}>The Brainrot Club</Text>
-          </View>
-        </View>
-        <View style={styles.topActions}>
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={() =>
-              setToast(
-                limitProgress.nudgeMessage ||
-                  'You are all caught up. Your brain approves.'
-              )
-            }
-          >
-            <Feather name="bell" size={17} color={COLORS.purple} />
-          </TouchableOpacity>
-          <View style={styles.xpPill}>
-            <Feather name="zap" size={13} color={COLORS.pink} />
-            <Text style={styles.xpText}>
-              <Text style={styles.xpBold}>{totalXp}</Text> XP
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Screen Content */}
-      <View style={styles.screenContainer}>{renderScreen()}</View>
-
-      {/* Bottom Tab Bar */}
-      <View style={styles.tabBar}>
-        {tabs.map((tab) => {
-          const isActive = activeView === tab.key;
-          const pendingMissions = missions.length - completedMissions;
-          return (
+          <View style={styles.topActions}>
             <TouchableOpacity
-              key={tab.key}
-              style={styles.tabItem}
-              onPress={() => setActiveView(tab.key)}
-              activeOpacity={0.7}
+              style={styles.iconButton}
+              onPress={() =>
+                setToast(
+                  limitProgress.nudgeMessage ||
+                    `${appState.streak.currentStreak}-day streak active · Your brain approves.`
+                )
+              }
             >
-              <View style={[styles.tabIconWrap, isActive && styles.tabIconWrapActive]}>
-                <Feather
-                  name={tab.icon as any}
-                  size={18}
-                  color={isActive ? COLORS.white : '#8d7e9c'}
-                />
-              </View>
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                {tab.label}
-              </Text>
-              {tab.key === 'Missions' && pendingMissions > 0 && (
-                <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
-                  <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
-                    {pendingMissions}
-                  </Text>
-                </View>
-              )}
+              <Feather name="bell" size={17} color={COLORS.purple} />
             </TouchableOpacity>
-          );
-        })}
-      </View>
+            <View style={styles.xpPill}>
+              <Feather name="zap" size={13} color={COLORS.pink} />
+              <Text style={styles.xpText}>
+                <Text style={styles.xpBold}>{totalXp}</Text> XP
+              </Text>
+            </View>
+          </View>
+        </View>
 
-      {/* Usage Access & Consent Modal */}
-      <UsagePermissionModal
-        visible={permissionModalOpen}
-        consentStatus={appState.consentStatus}
-        permissionGranted={Boolean(usageSummary?.permissionGranted)}
-        instagramInstalled={Boolean(usageSummary?.instagramInstalled)}
-        onAcceptAndOpenSettings={handleAcceptAndOpenSettings}
-        onAcceptWithoutSettings={handleAcceptWithoutSettings}
-        onDeclineOrLater={handleDeclineOrLater}
-        onClose={() => setPermissionModalOpen(false)}
-      />
+        {/* Screen Content */}
+        <View style={styles.screenContainer}>{renderScreen()}</View>
 
-      {/* Break Modal */}
-      <BreakModal
-        visible={breakOpen}
-        completedBreaksCount={appState.completedFocusBreaks}
-        onClose={() => setBreakOpen(false)}
-        onCompleteBreak={handleCompleteFocusBreak}
-      />
+        {/* Bottom Tab Bar */}
+        <View style={styles.tabBar}>
+          {tabs.map((tab) => {
+            const isActive = activeView === tab.key;
+            const pendingMissions = missions.length - completedMissions;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={styles.tabItem}
+                onPress={() => setActiveView(tab.key)}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.tabIconWrap, isActive && styles.tabIconWrapActive]}>
+                  <Feather
+                    name={tab.icon as any}
+                    size={18}
+                    color={isActive ? COLORS.white : '#8d7e9c'}
+                  />
+                </View>
+                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+                  {tab.label}
+                </Text>
+                {tab.key === 'Missions' && pendingMissions > 0 && (
+                  <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
+                    <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
+                      {pendingMissions}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
-      {/* Celebration Overlay */}
-      {celebration && (
-        <CelebrationOverlay
-          celebration={celebration}
-          onClose={() => setCelebration(null)}
+        {/* Usage Access & Consent Modal */}
+        <UsagePermissionModal
+          visible={permissionModalOpen}
+          consentStatus={appState.consentStatus}
+          permissionGranted={Boolean(usageSummary?.permissionGranted)}
+          instagramInstalled={Boolean(usageSummary?.instagramInstalled)}
+          onAcceptAndOpenSettings={handleAcceptAndOpenSettings}
+          onAcceptWithoutSettings={handleAcceptWithoutSettings}
+          onDeclineOrLater={handleDeclineOrLater}
+          onClose={() => setPermissionModalOpen(false)}
         />
-      )}
 
-      {/* Toast */}
-      {toast !== '' && (
-        <Animated.View
-          style={[
-            styles.toast,
-            {
-              opacity: toastOpacity,
-              transform: [{ translateY: toastTranslateY }],
-            },
-          ]}
-        >
-          <Feather name="zap" size={14} color={COLORS.white} />
-          <Text style={styles.toastText}>{toast}</Text>
-        </Animated.View>
-      )}
-    </SafeAreaView>
+        {/* Break Modal */}
+        <BreakModal
+          visible={breakOpen}
+          completedBreaksCount={appState.completedFocusBreaks}
+          onClose={() => setBreakOpen(false)}
+          onCompleteBreak={handleCompleteFocusBreak}
+        />
+
+        {/* Celebration Overlay */}
+        {celebration && (
+          <CelebrationOverlay
+            celebration={celebration}
+            onClose={() => setCelebration(null)}
+          />
+        )}
+
+        {/* Toast */}
+        {toast !== '' && (
+          <Animated.View
+            style={[
+              styles.toast,
+              {
+                opacity: toastOpacity,
+                transform: [{ translateY: toastTranslateY }],
+              },
+            ]}
+          >
+            <Feather name="zap" size={14} color={COLORS.white} />
+            <Text style={styles.toastText}>{toast}</Text>
+          </Animated.View>
+        )}
+      </SafeAreaView>
     </SafeAreaProvider>
   );
 }
@@ -798,67 +993,62 @@ const styles = StyleSheet.create({
   },
   tabIconWrapActive: {
     backgroundColor: COLORS.purple,
-    shadowColor: '#e3bde0',
-    shadowOpacity: 0.5,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
   },
   tabLabel: {
-    fontSize: 9,
-    fontWeight: '600',
+    fontSize: 10,
+    fontWeight: '700',
     color: '#8d7e9c',
-    marginTop: 3,
+    marginTop: 2,
   },
   tabLabelActive: {
     color: COLORS.purple,
-    fontWeight: '700',
   },
   tabBadge: {
     position: 'absolute',
-    top: 0,
-    right: '22%' as any,
-    minWidth: 16,
-    height: 16,
+    top: 2,
+    right: 10,
+    minWidth: 15,
+    height: 15,
     borderRadius: 8,
-    backgroundColor: '#f9dfe9',
+    backgroundColor: '#f1e4f3',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
+    paddingHorizontal: 3,
   },
   tabBadgeActive: {
-    backgroundColor: COLORS.pink,
+    backgroundColor: COLORS.yellow,
   },
   tabBadgeText: {
     fontSize: 9,
-    fontWeight: '700',
-    color: COLORS.pink,
+    fontWeight: '800',
+    color: COLORS.purple,
   },
   tabBadgeTextActive: {
-    color: COLORS.white,
+    color: COLORS.purple,
   },
 
   // Toast
   toast: {
     position: 'absolute',
-    bottom: 100,
+    bottom: Platform.OS === 'ios' ? 92 : 76,
     left: 20,
     right: 20,
+    backgroundColor: COLORS.ink,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 13,
-    paddingHorizontal: 18,
-    borderRadius: 30,
-    backgroundColor: COLORS.purple,
-    shadowColor: '#2a1648',
-    shadowOpacity: 0.4,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 8,
+    gap: 10,
+    shadowColor: '#241434',
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
   toastText: {
+    flex: 1,
+    color: COLORS.white,
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.white,
-    flex: 1,
   },
 });

@@ -1,6 +1,10 @@
 export type View = 'Today' | 'Missions' | 'Badges' | 'Leaderboard' | 'Card' | 'Settings';
 
-export type MissionId = 'touch-grass' | 'set-scroll-limit' | 'brain-check-in';
+export type MissionId =
+  | 'touch-grass'
+  | 'set-scroll-limit'
+  | 'brain-check-in'
+  | 'stay-under-target';
 
 export type Mission = {
   id: MissionId;
@@ -11,6 +15,10 @@ export type Mission = {
   iconColor: string;
   iconBg: string;
   done: boolean;
+  usageLinked?: boolean;
+  autoVerified?: boolean;
+  progressLabel?: string;
+  statusHint?: string;
 };
 
 export type BadgeId =
@@ -116,6 +124,128 @@ export type UserSettings = {
   dailyGentleNudge: boolean;
   privateMode: boolean;
   weekendBreathingRoom: boolean;
+  missionReminders: boolean;
+  streakReminders: boolean;
+};
+
+export type StreakDayStatus = 'completed' | 'grace_used' | 'missed' | 'pending';
+
+export type StreakState = {
+  currentStreak: number;
+  longestStreak: number;
+  lastEvaluatedDate: string | null;
+  graceDaysRemaining: number;
+  maxGraceDaysPerWeek: number;
+  graceWeekKey: string;
+  historyByDate: Record<string, StreakDayStatus>;
+  recoveryNeeded: boolean;
+  previousStreakBeforeBreak: number;
+  recoveredThisWeek: boolean;
+};
+
+export type WeeklyQuestId =
+  | 'balanced-week'
+  | 'focus-master'
+  | 'under-target-week';
+
+export type WeeklyQuest = {
+  id: WeeklyQuestId;
+  title: string;
+  detail: string;
+  target: number;
+  progress: number;
+  rewardXp: number;
+  completed: boolean;
+  claimed: boolean;
+  iconName: string;
+};
+
+export type WeeklyQuestState = {
+  weekKey: string;
+  quests: WeeklyQuest[];
+};
+
+export type MoodId = 'balanced' | 'curious' | 'cooked' | 'offline_reset';
+
+export type MoodOption = {
+  id: MoodId;
+  emoji: string;
+  label: string;
+  shortLabel: string;
+};
+
+export type MoodLogEntry = {
+  dateKey: string;
+  moodId: MoodId;
+  emoji: string;
+  label: string;
+  note: string;
+  loggedAt: string;
+};
+
+export type BrainrotBreakdown = {
+  baseScore: number;
+  usageRatioPercent: number | null;
+  missionBonus: number;
+  focusBreakBonus: number;
+  finalScore: number | null;
+  summaryText: string;
+};
+
+export type XpLedgerCategory =
+  | 'baseline'
+  | 'mission'
+  | 'chest'
+  | 'focus_break'
+  | 'weekly_quest'
+  | 'streak';
+
+export type XpLedgerEntry = {
+  id: string;
+  eventKey: string;
+  title: string;
+  amount: number;
+  category: XpLedgerCategory;
+  dateKey: string;
+  timestamp: string;
+};
+
+export type PendingLocalNotification = {
+  id: number;
+  key: string;
+  title: string;
+  body: string;
+  category: 'limit_80' | 'limit_100' | 'mission_reminder' | 'streak_reminder';
+};
+
+export type UserDataExportPayload = {
+  format: 'rot-user-data-export-v1';
+  exportedAt: string;
+  schemaVersion: number;
+  profile: {
+    effectiveDisplayName: string;
+    source: 'custom' | 'device' | 'fallback';
+    customDisplayName: string | null;
+    deviceDefaultName: string | null;
+  };
+  settings: UserSettings;
+  dailyLimitMinutes: number;
+  streak: StreakState;
+  xpSummary: {
+    totalXp: number;
+    baseXp: number;
+    earnedXp: number;
+    ledgerConsistent: boolean;
+    ledger: XpLedgerEntry[];
+  };
+  missionsByDate: Record<string, Record<string, boolean>>;
+  weeklyQuestsByWeek: Record<string, WeeklyQuestState>;
+  moodLogsByDate: Record<string, MoodLogEntry>;
+  usageSummary: {
+    consentStatus: ConsentStatus;
+    trackingEnabled: boolean;
+    cachedUsageSummary: InstagramUsageSummary | null;
+  };
 };
 
 export type PersistedAppState = {
@@ -134,4 +264,9 @@ export type PersistedAppState = {
   completedFocusBreaks: number;
   lastFocusBreakAt: string | null;
   cachedUsageSummary: InstagramUsageSummary | null;
+  streak: StreakState;
+  weeklyQuestsByWeek: Record<string, WeeklyQuestState>;
+  moodLogsByDate: Record<string, MoodLogEntry>;
+  xpLedger: XpLedgerEntry[];
+  sentNotificationsByDate: Record<string, string[]>;
 };

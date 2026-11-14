@@ -1,4 +1,11 @@
-import { Badge, LeaderboardTab, Mission, Ranking } from './types';
+import {
+  Badge,
+  LeaderboardTab,
+  Mission,
+  MoodOption,
+  Ranking,
+  WeeklyQuest,
+} from './types';
 
 export const initialMissions: Mission[] = [
   {
@@ -30,6 +37,74 @@ export const initialMissions: Mission[] = [
     iconColor: '#f32c87',
     iconBg: '#ffe4ef',
     done: false,
+  },
+  {
+    id: 'stay-under-target',
+    title: 'Keep scroll under target',
+    detail: 'Verified Instagram usage stays within your daily target',
+    reward: 45,
+    iconName: 'shield-check',
+    iconColor: '#2d9364',
+    iconBg: '#e4f8ee',
+    done: false,
+    usageLinked: true,
+  },
+];
+
+export const MOOD_OPTIONS: MoodOption[] = [
+  {
+    id: 'balanced',
+    emoji: '◡',
+    label: 'Chill and balanced',
+    shortLabel: 'Balanced',
+  },
+  {
+    id: 'curious',
+    emoji: '◠',
+    label: 'Chill but curious',
+    shortLabel: 'Curious',
+  },
+  {
+    id: 'cooked',
+    emoji: '≈',
+    label: 'Slightly cooked, ready to reset',
+    shortLabel: 'Cooked',
+  },
+  {
+    id: 'offline_reset',
+    emoji: '✦',
+    label: 'Offline & unbothered',
+    shortLabel: 'Offline',
+  },
+];
+
+export const INITIAL_WEEKLY_QUESTS: Omit<
+  WeeklyQuest,
+  'progress' | 'completed' | 'claimed'
+>[] = [
+  {
+    id: 'balanced-week',
+    title: 'Balanced Week',
+    detail: 'Complete at least 1 mission on 3 different days this week',
+    target: 3,
+    rewardXp: 90,
+    iconName: 'star',
+  },
+  {
+    id: 'focus-master',
+    title: 'Focus Break Master',
+    detail: 'Complete 2 focus break resets during the week',
+    target: 2,
+    rewardXp: 80,
+    iconName: 'clock',
+  },
+  {
+    id: 'under-target-week',
+    title: 'Target Guardian',
+    detail: 'Stay within your daily Instagram target on 3 verified days',
+    target: 3,
+    rewardXp: 110,
+    iconName: 'shield-check',
   },
 ];
 
@@ -80,6 +155,8 @@ export function getBadges(
   const completedCount = missions.filter((m) => m.done).length;
   const limitMission = missions.find((m) => m.id === 'set-scroll-limit') ?? missions[1];
   const checkInMission = missions.find((m) => m.id === 'brain-check-in') ?? missions[2];
+  const coreMissions = missions.filter((m) => !m.usageLinked);
+  const completedCoreCount = coreMissions.filter((m) => m.done).length;
 
   const rawBadges: Omit<Badge, 'unlocked' | 'unlockedAt'>[] = [
     {
@@ -137,7 +214,9 @@ export function getBadges(
     'limit-setter': Boolean(limitMission?.done),
     'grass-toucher': completedCount >= 2,
     'brain-check': Boolean(checkInMission?.done),
-    'soft-launcher': missions.length > 0 && completedCount >= missions.length,
+    'soft-launcher':
+      (coreMissions.length > 0 && completedCoreCount >= coreMissions.length) ||
+      (missions.length > 0 && completedCount >= missions.length),
     'offline-icon': completedFocusBreaks >= 1,
   };
 

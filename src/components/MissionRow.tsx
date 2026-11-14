@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { COLORS, RADIUS, SPACING } from '../constants/theme';
+import { COLORS, RADIUS } from '../constants/theme';
 import { Mission } from '../constants/types';
 import Icon from './Icon';
 
@@ -20,8 +20,25 @@ export default function MissionRow({ mission, onPress }: Props) {
         <Icon name={mission.iconName} size={18} color={mission.iconColor} />
       </View>
       <View style={styles.copy}>
-        <Text style={styles.title}>{mission.title}</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>{mission.title}</Text>
+          {mission.usageLinked && (
+            <View style={styles.linkedChip}>
+              <Text style={styles.linkedChipText}>USAGE-LINKED</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.detail}>{mission.detail}</Text>
+        {mission.progressLabel && (
+          <Text
+            style={[
+              styles.progressLabel,
+              mission.done && { color: '#2d9364' },
+            ]}
+          >
+            {mission.progressLabel}
+          </Text>
+        )}
       </View>
       {mission.done ? (
         <View style={styles.checkMark}>
@@ -64,15 +81,39 @@ const styles = StyleSheet.create({
   copy: {
     flex: 1,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   title: {
     fontSize: 13,
     fontWeight: '700',
     color: COLORS.ink,
   },
+  linkedChip: {
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: '#e4f8ee',
+  },
+  linkedChipText: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: '#2d9364',
+    letterSpacing: 0.5,
+  },
   detail: {
     fontSize: 11,
     color: COLORS.muted,
     marginTop: 3,
+  },
+  progressLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+    marginTop: 4,
   },
   reward: {
     color: COLORS.pink,

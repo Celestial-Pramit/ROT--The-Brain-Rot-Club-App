@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { InstagramUsageSummary } from '../constants/types';
 
 export type DeviceProfileInfo = {
@@ -14,6 +14,12 @@ type RotUsageStatsNativeModule = {
   openUsageAccessSettings(): Promise<boolean>;
   getDeviceProfileInfo(): Promise<DeviceProfileInfo>;
   getInstagramUsageSummary(daysBack: number): Promise<InstagramUsageSummary>;
+  areNotificationsEnabled?(): Promise<boolean>;
+  postLocalNotification?(
+    notificationId: number,
+    title: string,
+    body: string
+  ): Promise<boolean>;
 };
 
 const NativeRotUsageStats: RotUsageStatsNativeModule | undefined =
@@ -43,6 +49,49 @@ export async function openAndroidUsageAccessSettings(): Promise<boolean> {
   if (!NativeRotUsageStats) return false;
   try {
     return await NativeRotUsageStats.openUsageAccessSettings();
+  } catch {
+    return false;
+  }
+}
+
+export async function checkAndRequestNotificationPermission(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  try {
+    if (typeof Platform.Version === 'number' && Platform.Version >= 33) {
+      const permission = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
+      if (permission) {
+        const alreadyGranted = await PermissionsAndroid.check(permission);
+        if (!alreadyGranted) {
+          const status = await PermissionsAndroid.request(permission);
+          if (status !== PermissionsAndroid.RESULTS.GRANTED) {
+            return false;
+          }
+        }
+      }
+    }
+    if (NativeRotUsageStats?.areNotificationsEnabled) {
+      return await NativeRotUsageStats.areNotificationsEnabled();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function sendLocalNotification(
+  notificationId: number,
+  title: string,
+  body: string
+): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.postLocalNotification) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.postLocalNotification(
+      notificationId,
+      title,
+      body
+    );
   } catch {
     return false;
   }
