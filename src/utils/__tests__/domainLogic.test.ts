@@ -2,9 +2,11 @@ import { assert, describe, it } from '../testHarness';
 import {
   addLocalDays,
   buildUsageDisplayState,
+  buildWeeklyAchievementSummary,
   calculateBrainrotIndex,
   calculateEarnedXpForDate,
   calculateLimitProgress,
+  calculatePlayerLevel,
   calculateTotalXp,
   claimDailyChestState,
   claimWeeklyQuestState,
@@ -14,13 +16,16 @@ import {
   createInitialPersistedState,
   evaluatePendingNotifications,
   evaluateStreakState,
+  formatCardExportFilename,
   formatFreshnessLabel,
   formatMinutesAsHoursAndMinutes,
+  formatUnreadBadgeCount,
   getEffectiveDailyLimitMinutes,
   getLocalWeekKey,
   getMissionsForDate,
   getWeeklyQuestState,
   getXpLedgerEntries,
+  isWithinQuietHours,
   logDailyMoodState,
   MAX_DISPLAY_NAME_LENGTH,
   parseCustomDailyLimitInput,
@@ -726,5 +731,122 @@ describe('ROT Executive Demo & Core MVP - Domain Logic Test Suite', () => {
     const formatted = formatMinutesAsHoursAndMinutes(90);
     assert.equal(formatted.compact, '1h 30m');
     assert.equal(formatFreshnessLabel(1000, 1000 + 120_000), 'Fresh 2 min ago');
+
+    // Capped at 99 breakdown note
+    const cappedIndex = calculateBrainrotIndex(0, 120, true, 2, 1);
+    assert.equal(cappedIndex.score, 99);
+    assert.ok(cappedIndex.breakdown.summaryText.includes('(capped at 99)'));
+  });
+
+  it('PR #2.1: Evaluates quiet hours, configurable reminder hours, and focus break duration ledger titles', () => {
+    const dateKey = '2026-11-14';
+    let state = createInitialPersistedState(dateKey, 'Redmi 11 Prime');
+    state = {
+      ...state,
+      consentStatus: 'accepted',
+      trackingEnabled: true,
+      settings: {
+        ...state.settings,
+        quietHoursEnabled: true,
+        quietStartHour: 22,
+        quietEndHour: 8,
+        eveningReminderHour: 18,
+        streakReminderHour: 20,
+      },
+    };
+
+    // Overnight quiet hours check (22 -> 8)
+    assert.equal(isWithinQuietHours(state.settings, 23), true);
+    assert.equal(isWithinQuietHours(state.settings, 7), true);
+    assert.equal(isWithinQuietHours(state.settings, 19), false);
+
+    // Same-day quiet hours check (13 -> 15)
+    assert.equal(
+      isWithinQuietHours(
+        { ...state.settings, quietStartHour: 13, quietEndHour: 15 },
+        14
+      ),
+      true
+    );
+    assert.equal(
+      isWithinQuietHours({ ...state.settings, quietHoursEnabled: false }, 23),
+      false
+    );
+
+    const now = new Date('2026-11-14T18:30:00').getTime();
+    const summary: InstagramUsageSummary = {
+      status: 'ok',
+      statusReason: 'estimated Instagram foreground time',
+      permissionGranted: true,
+      instagramInstalled: true,
+      todayForegroundMs: 105 * 60 * 1000,
+      queriedAtMs: now,
+      dailyBreakdown: [],
+      isComplete: true,
+    };
+    const display = buildUsageDisplayState(summary, 'accepted', true, now);
+    const progress = calculateLimitProgress(summary.todayForegroundMs, 120, true);
+
+    // Suppressed during quiet hours (22:00)
+    const quietEval = evaluatePendingNotifications(state, display, progress, dateKey, 22);
+    assert.equal(quietEval.notifications.length, 0);
+
+    // Fires configurable evening mission reminder at hour 18
+    const eveningEval = evaluatePendingNotifications(state, display, progress, dateKey, 18);
+    assert.equal(
+      eveningEval.notifications.some((n) => n.category === 'mission_reminder'),
+      true
+    );
+
+    // Focus break duration parameter updates ledger title
+    const break1m = completeFocusBreakState(state, 'demo-session', dateKey, 1);
+    const ledger = getXpLedgerEntries(break1m.nextState);
+    assert.equal(
+      ledger.some((entry) => entry.title === '1-Minute Focus Break'),
+      true
+    );
+  });
+
+  it('PR #2.1: Computes player level, export PNG filenames, and honest Weekly Achievement summaries', () => {
+    const level4 = calculatePlayerLevel(340);
+    assert.equal(level4.level, 4);
+    assert.equal(level4.title, 'Mindful Scroller');
+    assert.equal(level4.progressPercent, 40);
+
+    assert.equal(
+      formatCardExportFilename('archetype', 'Pramit @ROT!', '2026-11-15', 'feed'),
+      'ROT_Archetype_Pramit_ROT_20261115.png'
+    );
+    assert.equal(
+      formatCardExportFilename('weekly', 'Ayla', '2026-11-15', 'story'),
+      'ROT_Weekly_Achievement_Ayla_20261115_Story.png'
+    );
+
+    // Honest zero-progress weekly summary after clearLocalHistoryState
+    const monday = '2026-11-09';
+    const clean = clearLocalHistoryState(createInitialPersistedState(monday), monday);
+    const emptyWeekly = buildWeeklyAchievementSummary(clean, monday);
+    assert.equal(emptyWeekly.hasAnyProgress, false);
+    assert.equal(emptyWeekly.weeklyXpEarned, 0);
+    assert.equal(emptyWeekly.heroMetricValue, '0 XP');
+
+    // Active week summary reflects real XP and mission count
+    let active = toggleMissionState(clean, 0, monday).nextState;
+    active = completeFocusBreakState(active, 'b1', monday, 5).nextState;
+    const activeWeekly = buildWeeklyAchievementSummary(active, monday);
+    assert.equal(activeWeekly.hasAnyProgress, true);
+    assert.ok(activeWeekly.weeklyXpEarned >= 70);
+    assert.ok(activeWeekly.missionsCompletedThisWeek >= 1);
+  });
+
+  it('PR #2.1 Final UX: Formats unread notification badge counts with 0 hidden and 99+ cap', () => {
+    assert.equal(formatUnreadBadgeCount(0), null);
+    assert.equal(formatUnreadBadgeCount(-3), null);
+    assert.equal(formatUnreadBadgeCount(Number.NaN), null);
+    assert.equal(formatUnreadBadgeCount(1), '1');
+    assert.equal(formatUnreadBadgeCount(14), '14');
+    assert.equal(formatUnreadBadgeCount(99), '99');
+    assert.equal(formatUnreadBadgeCount(100), '99+');
+    assert.equal(formatUnreadBadgeCount(245), '99+');
   });
 });

@@ -13,7 +13,7 @@ type Props = {
   visible: boolean;
   completedBreaksCount: number;
   onClose: () => void;
-  onCompleteBreak: (sessionId: string) => void;
+  onCompleteBreak: (sessionId: string, durationMinutes: number) => void;
 };
 
 const DURATION_OPTIONS = [
@@ -45,14 +45,14 @@ export default function BreakModal({
     if (!running) return;
     if (secondsLeft <= 0) {
       setRunning(false);
-      onCompleteBreak(sessionRef.current);
+      onCompleteBreak(sessionRef.current, Math.max(1, Math.round(totalSeconds / 60)));
       return;
     }
     const timer = setInterval(() => {
       setSecondsLeft((c) => Math.max(0, c - 1));
     }, 1000);
     return () => clearInterval(timer);
-  }, [running, secondsLeft, onCompleteBreak]);
+  }, [running, secondsLeft, totalSeconds, onCompleteBreak]);
 
   const formatted = `${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(
     secondsLeft % 60
@@ -139,7 +139,7 @@ export default function BreakModal({
             style={styles.completeNowBtn}
             onPress={() => {
               setRunning(false);
-              onCompleteBreak(sessionRef.current);
+              onCompleteBreak(sessionRef.current, Math.max(1, Math.round(totalSeconds / 60)));
             }}
             activeOpacity={0.75}
           >

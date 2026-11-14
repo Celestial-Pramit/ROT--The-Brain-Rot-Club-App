@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,10 +6,17 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { DAILY_LIMIT_OPTIONS } from '../constants/data';
-import { ConsentStatus, InstagramUsageSummary, UserSettings } from '../constants/types';
+import {
+  ConsentStatus,
+  InstagramUsageSummary,
+  NotificationStatusSnapshot,
+  UserSettings,
+} from '../constants/types';
 import {
   DAILY_LIMIT_STEP_MINUTES,
   formatMinutesAsHoursAndMinutes,
@@ -33,11 +40,16 @@ type Props = {
   settings: UserSettings;
   usageSummary: InstagramUsageSummary | null;
   usageDisplay: UsageDisplayState;
+  notificationStatus: NotificationStatusSnapshot;
+  testNotificationFeedback: string | null;
   onToggleTracking: (nextEnabled: boolean) => void;
   onOpenUsageSetup: () => void;
   onOpenSystemUsageSettings: () => void;
+  onOpenNotificationSettings: (channelId?: string | null) => void;
+  onRefreshNotificationStatus: () => void;
   onChangeDailyLimit: (minutes: number) => void;
   onToggleSetting: (key: keyof UserSettings) => void;
+  onUpdateSettingsPatch: (patch: Partial<UserSettings>) => void;
   onClearLocalHistory: () => void;
   onRefreshUsage: () => void;
   onExportUserData: () => void;
@@ -89,11 +101,16 @@ export default function SettingsScreen({
   settings,
   usageSummary,
   usageDisplay,
+  notificationStatus,
+  testNotificationFeedback,
   onToggleTracking,
   onOpenUsageSetup,
   onOpenSystemUsageSettings,
+  onOpenNotificationSettings,
+  onRefreshNotificationStatus,
   onChangeDailyLimit,
   onToggleSetting,
+  onUpdateSettingsPatch,
   onClearLocalHistory,
   onRefreshUsage,
   onExportUserData,
@@ -107,6 +124,8 @@ export default function SettingsScreen({
   );
   const [customLimitError, setCustomLimitError] = useState<string | null>(null);
   const [showExportPreview, setShowExportPreview] = useState(false);
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const limitCardYRef = useRef(0);
 
   useEffect(() => {
     setDraftName(customDisplayName ?? displayName);
@@ -122,6 +141,30 @@ export default function SettingsScreen({
   const trackingActive =
     consentStatus === 'accepted' && trackingEnabled && permissionGranted;
 
+  const notifBadgeLabel =
+    notificationStatus.statusCode === 'allowed'
+      ? 'Allowed'
+      : notificationStatus.statusCode === 'permission_required'
+      ? 'Permission Required'
+      : notificationStatus.statusCode === 'channel_disabled'
+      ? 'Channel Disabled'
+      : 'Off';
+
+  const notifBadgeHealthy = notificationStatus.statusCode === 'allowed';
+
+  const formatHour = (h: number) => {
+    const safe = ((h % 24) + 24) % 24;
+    const suffix = safe >= 12 ? 'PM' : 'AM';
+    const hour12 = safe % 12 === 0 ? 12 : safe % 12;
+    return `${hour12}:00 ${suffix}`;
+  };
+
+  const eveningHour = settings.eveningReminderHour ?? 19;
+  const streakHour = settings.streakReminderHour ?? 21;
+  const quietEnabled = settings.quietHoursEnabled !== false;
+  const quietStart = settings.quietStartHour ?? 22;
+  const quietEnd = settings.quietEndHour ?? 8;
+
   function handleApplyCustomLimit() {
     const parsed = parseCustomDailyLimitInput(customLimitInput);
     if (!parsed.valid || parsed.minutes === null) {
@@ -133,11 +176,19 @@ export default function SettingsScreen({
   }
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
       style={styles.scroll}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'android' ? 80 : 0}
     >
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: 60 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
       {/* Header */}
       <Text style={styles.eyebrow}>CONTROL CENTER</Text>
       <Text style={styles.heading}>
@@ -333,7 +384,12 @@ export default function SettingsScreen({
       <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
         DAILY SCROLL TARGET
       </Text>
-      <View style={styles.limitCard}>
+      <View
+        style={styles.limitCard}
+        onLayout={(e) => {
+          limitCardYRef.current = e.nativeEvent.layout.y;
+        }}
+      >
         <View style={styles.limitHeader}>
           <View style={styles.settingIcon}>
             <Icon name="sliders" size={18} color={COLORS.purple} />
@@ -414,6 +470,14 @@ export default function SettingsScreen({
             placeholder="Minutes"
             placeholderTextColor="#a395b2"
             returnKeyType="done"
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollTo({
+                  y: Math.max(0, limitCardYRef.current - 24),
+                  animated: true,
+                });
+              }, 160);
+            }}
             onSubmitEditing={handleApplyCustomLimit}
           />
           <TouchableOpacity
@@ -443,28 +507,138 @@ export default function SettingsScreen({
         <SettingRow
           iconName="bell"
           title="Daily gentle nudge"
-          detail="A non-shaming local alert when you reach 80% or 100% of your limit"
+          detail="Background WorkManager + foreground alert at 80% or 100% of your limit"
           checked={settings.dailyGentleNudge}
           onChange={() => onToggleSetting('dailyGentleNudge')}
         />
         <SettingRow
           iconName="star"
           title="Mission reminders"
-          detail="Evening check-in reminder if today’s missions are still open"
+          detail={`Scheduled daily check-in at ${formatHour(eveningHour)} if missions are open`}
           checked={settings.missionReminders}
           onChange={() => onToggleSetting('missionReminders')}
         />
         <SettingRow
           iconName="flame"
           title="Streak & grace-day reminders"
-          detail="Gentle heads-up before midnight to protect your daily streak"
+          detail={`Scheduled protection alert at ${formatHour(streakHour)} before midnight`}
           checked={settings.streakReminders}
           onChange={() => onToggleSetting('streakReminders')}
         />
         <SettingRow
+          iconName="trophy"
+          title="Achievement notifications"
+          detail="Celebrate newly unlocked badges and milestone streaks locally"
+          checked={settings.achievementNotifications !== false}
+          onChange={() => onToggleSetting('achievementNotifications')}
+        />
+        <SettingRow
+          iconName="moon"
+          title="Quiet hours"
+          detail={
+            quietEnabled
+              ? `Suppress nudges & reminders between ${formatHour(quietStart)} and ${formatHour(quietEnd)}`
+              : 'Quiet hours disabled · reminders can fire anytime'
+          }
+          checked={quietEnabled}
+          onChange={() =>
+            onUpdateSettingsPatch({ quietHoursEnabled: !quietEnabled })
+          }
+        />
+
+        {/* Configurable Schedule Times & Quiet Window */}
+        <View style={styles.scheduleGrid}>
+          {settings.missionReminders && (
+            <View style={styles.scheduleRow}>
+              <Text style={styles.scheduleLabel}>Evening reminder</Text>
+              <View style={styles.scheduleStepperGroup}>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      eveningReminderHour: (eveningHour + 23) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>-1h</Text>
+                </TouchableOpacity>
+                <Text style={styles.scheduleValue}>{formatHour(eveningHour)}</Text>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      eveningReminderHour: (eveningHour + 1) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>+1h</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {settings.streakReminders && (
+            <View style={styles.scheduleRow}>
+              <Text style={styles.scheduleLabel}>Streak reminder</Text>
+              <View style={styles.scheduleStepperGroup}>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      streakReminderHour: (streakHour + 23) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>-1h</Text>
+                </TouchableOpacity>
+                <Text style={styles.scheduleValue}>{formatHour(streakHour)}</Text>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      streakReminderHour: (streakHour + 1) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>+1h</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {quietEnabled && (
+            <View style={styles.scheduleRow}>
+              <Text style={styles.scheduleLabel}>Quiet window</Text>
+              <View style={styles.scheduleStepperGroup}>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      quietStartHour: (quietStart + 1) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>Start {formatHour(quietStart)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.miniStepBtn}
+                  onPress={() =>
+                    onUpdateSettingsPatch({
+                      quietEndHour: (quietEnd + 1) % 24,
+                    })
+                  }
+                >
+                  <Text style={styles.miniStepText}>End {formatHour(quietEnd)}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
+
+        <SettingRow
           iconName="shield-check"
           title="Private mode"
-          detail="Keep your progress and profile visible only to you"
+          detail="Keep your progress and cards local-only unless you choose to share"
           checked={settings.privateMode}
           onChange={() => onToggleSetting('privateMode')}
         />
@@ -476,18 +650,117 @@ export default function SettingsScreen({
           onChange={() => onToggleSetting('weekendBreathingRoom')}
         />
 
-        <View style={styles.notificationTestFooter}>
-          <Text style={styles.syncMetaText}>
-            Notifications respect Android system permissions and your toggle rules above.
-          </Text>
-          <TouchableOpacity
-            style={styles.actionBtnSecondary}
-            onPress={onSendTestNotification}
-            activeOpacity={0.8}
-          >
-            <Icon name="bell" size={13} color={COLORS.purple} />
-            <Text style={styles.actionBtnSecondaryText}>Send test nudge</Text>
-          </TouchableOpacity>
+        {/* Notification Diagnostics & Test Nudge */}
+        <View style={styles.permissionStatusBlock}>
+          <View style={styles.statusBadgesRow}>
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: notifBadgeHealthy
+                      ? COLORS.green
+                      : COLORS.orange,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Notifications: {notifBadgeLabel}
+              </Text>
+            </View>
+
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: notificationStatus.nudgesChannelEnabled
+                      ? COLORS.green
+                      : COLORS.orange,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Nudge channel: {notificationStatus.nudgesChannelEnabled ? 'On' : 'Blocked'}
+              </Text>
+            </View>
+
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: notificationStatus.quietHoursActiveNow
+                      ? COLORS.purple
+                      : COLORS.green,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                {notificationStatus.quietHoursActiveNow
+                  ? 'Quiet hours active'
+                  : 'Alerts active'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.actionBtnRow}>
+            <TouchableOpacity
+              style={styles.actionBtnSecondary}
+              onPress={onSendTestNotification}
+              activeOpacity={0.8}
+            >
+              <Icon name="bell" size={13} color={COLORS.purple} />
+              <Text style={styles.actionBtnSecondaryText}>Send test nudge</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionBtnSecondary}
+              onPress={onRefreshNotificationStatus}
+              activeOpacity={0.8}
+            >
+              <Icon name="refresh" size={13} color={COLORS.purple} />
+              <Text style={styles.actionBtnSecondaryText}>Check status</Text>
+            </TouchableOpacity>
+          </View>
+
+          {!notifBadgeHealthy && (
+            <TouchableOpacity
+              style={styles.actionBtnPrimary}
+              onPress={() =>
+                onOpenNotificationSettings(
+                  notificationStatus.statusCode === 'channel_disabled'
+                    ? !notificationStatus.nudgesChannelEnabled
+                      ? 'rot_wellbeing_nudges'
+                      : 'rot_scheduled_reminders'
+                    : null
+                )
+              }
+              activeOpacity={0.8}
+            >
+              <Icon name="external-link" size={13} color={COLORS.white} />
+              <Text style={styles.actionBtnPrimaryText}>
+                Open Android Notification Settings
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {testNotificationFeedback ? (
+            <View style={styles.feedbackBanner}>
+              <Icon
+                name={notifBadgeHealthy ? 'check' : 'alert-circle'}
+                size={13}
+                color={notifBadgeHealthy ? '#2d9364' : COLORS.orange}
+              />
+              <Text style={styles.feedbackBannerText}>
+                {testNotificationFeedback}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.syncMetaText}>
+              Scheduled reminders survive app close & reboot via Android AlarmManager + WorkManager (15m periodic usage checks). Force-stop pauses Android background jobs until reopened.
+            </Text>
+          )}
         </View>
       </View>
 
@@ -584,7 +857,8 @@ export default function SettingsScreen({
           </Text>
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -987,5 +1261,64 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     marginTop: 4,
     lineHeight: 16,
+  },
+  scheduleGrid: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#fcf9ff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0e8f0',
+    gap: 10,
+  },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  scheduleLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  scheduleStepperGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  scheduleValue: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+    minWidth: 62,
+    textAlign: 'center',
+  },
+  miniStepBtn: {
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: '#ece3f8',
+  },
+  miniStepText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  feedbackBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#e4d6f4',
+  },
+  feedbackBannerText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.ink,
+    lineHeight: 15,
   },
 });

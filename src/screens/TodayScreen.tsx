@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { MOOD_OPTIONS } from '../constants/data';
@@ -95,6 +97,8 @@ export default function TodayScreen({
   );
   const [moodNote, setMoodNote] = useState(todayMoodLog?.note ?? '');
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const moodCardYRef = useRef(0);
 
   useEffect(() => {
     if (!editingName) {
@@ -151,11 +155,19 @@ export default function TodayScreen({
     usageDisplay.minutes !== null;
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
       style={styles.scroll}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'android' ? 80 : 0}
     >
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: 48 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
       {/* Welcome */}
       <View style={styles.welcomeRow}>
         <Text style={styles.eyebrow}>{dateHeader}</Text>
@@ -278,7 +290,12 @@ export default function TodayScreen({
       </View>
 
       {/* Mood Badge & Interactive Mood Logger */}
-      <View style={styles.moodContainer}>
+      <View
+        style={styles.moodContainer}
+        onLayout={(e) => {
+          moodCardYRef.current = e.nativeEvent.layout.y;
+        }}
+      >
         <View style={styles.moodBadgeRow}>
           <View style={styles.moodFace}>
             <Text style={styles.moodEmoji}>{brainrotIndex.moodEmoji}</Text>
@@ -347,6 +364,14 @@ export default function TodayScreen({
               placeholder="One thing you want to make time for today (optional)..."
               placeholderTextColor="#a395b2"
               returnKeyType="done"
+              onFocus={() => {
+                setTimeout(() => {
+                  scrollRef.current?.scrollTo({
+                    y: Math.max(0, moodCardYRef.current - 12),
+                    animated: true,
+                  });
+                }, 140);
+              }}
             />
             <View style={styles.moodDrawerFooter}>
               <Text style={styles.moodDrawerHint}>
@@ -688,7 +713,8 @@ export default function TodayScreen({
             : 'Complete a mission or focus break to grow your brain bank.'}
         </Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

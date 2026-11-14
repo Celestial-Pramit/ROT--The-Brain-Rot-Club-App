@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import {
 } from '../constants/types';
 import MissionRow from '../components/MissionRow';
 import Icon from '../components/Icon';
+import { calculatePlayerLevel } from '../utils/domainLogic';
 
 type Props = {
   missions: Mission[];
@@ -25,6 +26,7 @@ type Props = {
   onClaimWeeklyQuest: (questId: WeeklyQuestId) => void;
   xpLedger: XpLedgerEntry[];
   ledgerConsistent: boolean;
+  scrollToLedgerRequestId?: number;
 };
 
 export default function MissionsScreen({
@@ -36,12 +38,31 @@ export default function MissionsScreen({
   onClaimWeeklyQuest,
   xpLedger,
   ledgerConsistent,
+  scrollToLedgerRequestId = 0,
 }: Props) {
   const completedCount = missions.filter((m) => m.done).length;
   const grassUnlocked = completedCount >= 2;
+  const playerLevel = calculatePlayerLevel(totalXp);
+  const scrollViewRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const ledgerYRef = useRef<number | null>(null);
+  const pendingScrollRef = useRef(false);
+
+  useEffect(() => {
+    if (scrollToLedgerRequestId <= 0) return;
+    if (ledgerYRef.current !== null) {
+      scrollViewRef.current?.scrollTo({
+        y: Math.max(0, ledgerYRef.current - 10),
+        animated: true,
+      });
+      pendingScrollRef.current = false;
+    } else {
+      pendingScrollRef.current = true;
+    }
+  }, [scrollToLedgerRequestId]);
 
   return (
     <ScrollView
+      ref={scrollViewRef}
       style={styles.scroll}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
@@ -68,7 +89,9 @@ export default function MissionsScreen({
           <Icon name="sparkles" size={32} color={COLORS.white} />
         </View>
         <View style={styles.heroCopy}>
-          <Text style={styles.heroEyebrow}>LEVEL 04 · SOFT LAUNCHER</Text>
+          <Text style={styles.heroEyebrow}>
+            LEVEL {String(playerLevel.level).padStart(2, '0')} · {playerLevel.title.toUpperCase()}
+          </Text>
           <Text style={styles.heroTitle}>Build your offline superpower.</Text>
           <Text style={styles.heroSub}>
             Finish two missions today to unlock the Grass Toucher brain badge.
@@ -203,7 +226,20 @@ export default function MissionsScreen({
       </View>
 
       {/* XP Ledger Section */}
-      <View style={styles.sectionHeader}>
+      <View
+        style={styles.sectionHeader}
+        onLayout={(e) => {
+          const y = e.nativeEvent.layout.y;
+          ledgerYRef.current = y;
+          if (pendingScrollRef.current) {
+            pendingScrollRef.current = false;
+            scrollViewRef.current?.scrollTo({
+              y: Math.max(0, y - 10),
+              animated: true,
+            });
+          }
+        }}
+      >
         <View>
           <Text style={styles.eyebrow}>TRANSACTION HISTORY</Text>
           <Text style={styles.sectionTitle}>Brain Bank XP Ledger</Text>

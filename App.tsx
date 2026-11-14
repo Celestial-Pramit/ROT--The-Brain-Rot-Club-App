@@ -16,9 +16,13 @@ import { Feather } from '@expo/vector-icons';
 import { COLORS } from './src/constants/theme';
 import {
   Badge,
+  CardExportFormat,
+  CardType,
   Celebration,
   InstagramUsageSummary,
   MoodId,
+  NotificationInboxSnapshot,
+  NotificationStatusSnapshot,
   PersistedAppState,
   UserSettings,
   View as ViewType,
@@ -27,9 +31,11 @@ import {
 import { getBadges } from './src/constants/data';
 import {
   buildUsageDisplayState,
+  buildWeeklyAchievementSummary,
   calculateBrainrotIndex,
   calculateEarnedXpForDate,
   calculateLimitProgress,
+  calculatePlayerLevel,
   calculateTotalXp,
   claimDailyChestState,
   claimWeeklyQuestState,
@@ -39,12 +45,14 @@ import {
   createInitialPersistedState,
   evaluatePendingNotifications,
   formatMinutesAsHoursAndMinutes,
+  formatUnreadBadgeCount,
   getDailyChestForDate,
   getEffectiveDailyLimitMinutes,
   getLocalDateKey,
   getMissionsForDate,
   getWeeklyQuestState,
   getXpLedgerEntries,
+  isDateActiveForStreak,
   logDailyMoodState,
   recoverStreakState,
   resolveEffectiveDisplayName,
@@ -59,10 +67,17 @@ import {
 import { loadPersistedState, savePersistedState } from './src/utils/storage';
 import {
   checkAndRequestNotificationPermission,
+  clearNativeNotificationHistory,
+  fetchNotificationInbox,
+  fetchNotificationStatus,
+  markAllNativeNotificationsRead,
+  openAndroidNotificationSettings,
   openAndroidUsageAccessSettings,
   queryDeviceProfileInfo,
   queryInstagramUsageSummary,
   sendLocalNotification,
+  subscribeToNativeNotificationUpdates,
+  syncNativeNotificationConfig,
 } from './src/utils/usageStats';
 import TodayScreen from './src/screens/TodayScreen';
 import MissionsScreen from './src/screens/MissionsScreen';
@@ -72,6 +87,7 @@ import BrainrotCardScreen from './src/screens/BrainrotCardScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import BreakModal from './src/components/BreakModal';
 import CelebrationOverlay from './src/components/CelebrationOverlay';
+import NotificationCenterModal from './src/components/NotificationCenterModal';
 import UsagePermissionModal from './src/components/UsagePermissionModal';
 import Icon from './src/components/Icon';
 
@@ -103,6 +119,24 @@ export default function App() {
   const [breakOpen, setBreakOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [celebration, setCelebration] = useState<Celebration | null>(null);
+  const [notificationStatus, setNotificationStatus] =
+    useState<NotificationStatusSnapshot>({
+      runtimePermissionGranted: Platform.OS !== 'android',
+      appNotificationsEnabled: false,
+      nudgesChannelEnabled: false,
+      remindersChannelEnabled: false,
+      statusCode: 'notifications_off',
+      quietHoursActiveNow: false,
+      sentKeysToday: [],
+    });
+  const [testNotificationFeedback, setTestNotificationFeedback] = useState<
+    string | null
+  >(null);
+  const [notificationInbox, setNotificationInbox] =
+    useState<NotificationInboxSnapshot>({ unreadCount: 0, items: [] });
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [highlightedUnreadIds, setHighlightedUnreadIds] = useState<string[]>([]);
+  const [scrollToLedgerRequestId, setScrollToLedgerRequestId] = useState(0);
 
   const appStateRef = useRef(appState);
   appStateRef.current = appState;
@@ -118,6 +152,39 @@ export default function App() {
     },
     []
   );
+
+  const refreshNotificationInbox = useCallback(async () => {
+    const inbox = await fetchNotificationInbox();
+    setNotificationInbox(inbox);
+    return inbox;
+  }, []);
+
+  const refreshNotificationStatus = useCallback(async () => {
+    const [status] = await Promise.all([
+      fetchNotificationStatus(),
+      refreshNotificationInbox(),
+    ]);
+    setNotificationStatus(status);
+    if (status.sentKeysToday && status.sentKeysToday.length > 0) {
+      const todayKey = getLocalDateKey();
+      const existing = appStateRef.current.sentNotificationsByDate?.[todayKey] ?? [];
+      const missing = status.sentKeysToday.filter((k) => !existing.includes(k));
+      if (missing.length > 0) {
+        updateAndPersist((prev) => {
+          const prevKeys = prev.sentNotificationsByDate?.[todayKey] ?? [];
+          const merged = Array.from(new Set([...prevKeys, ...status.sentKeysToday]));
+          return {
+            ...prev,
+            sentNotificationsByDate: {
+              ...(prev.sentNotificationsByDate ?? {}),
+              [todayKey]: merged,
+            },
+          };
+        });
+      }
+    }
+    return status;
+  }, [updateAndPersist, refreshNotificationInbox]);
 
   const syncUsageStats = useCallback(
     async (showFeedbackToast = false) => {
@@ -182,15 +249,34 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [loaded, deviceInfo] = await Promise.all([
-        loadPersistedState(),
-        queryDeviceProfileInfo(),
-      ]);
+      const [loaded, deviceInfo, initialNotifStatus, initialInbox] =
+        await Promise.all([
+          loadPersistedState(),
+          queryDeviceProfileInfo(),
+          fetchNotificationStatus(),
+          fetchNotificationInbox(),
+        ]);
       if (!mounted) return;
-      const hydratedState = updateDeviceDefaultNameState(
+      const todayKeyOnBoot = getLocalDateKey();
+      let hydratedState = updateDeviceDefaultNameState(
         loaded,
         deviceInfo.deviceName
       );
+      if (initialNotifStatus.sentKeysToday.length > 0) {
+        const prevKeys =
+          hydratedState.sentNotificationsByDate?.[todayKeyOnBoot] ?? [];
+        hydratedState = {
+          ...hydratedState,
+          sentNotificationsByDate: {
+            ...(hydratedState.sentNotificationsByDate ?? {}),
+            [todayKeyOnBoot]: Array.from(
+              new Set([...prevKeys, ...initialNotifStatus.sentKeysToday])
+            ),
+          },
+        };
+      }
+      setNotificationStatus(initialNotifStatus);
+      setNotificationInbox(initialInbox);
       setAppState(hydratedState);
       if (hydratedState !== loaded) {
         void savePersistedState(hydratedState);
@@ -242,13 +328,22 @@ export default function App() {
       if (hydratedState.consentStatus === 'pending') {
         setPermissionModalOpen(true);
       }
+      void refreshNotificationStatus();
     })();
     return () => {
       mounted = false;
     };
-  }, [updateAndPersist]);
+  }, [updateAndPersist, refreshNotificationStatus]);
 
-  // Re-query UsageStats automatically when returning from Android system Usage Access settings
+  // Listen for native Android notification deliveries in real time
+  useEffect(() => {
+    const unsubscribe = subscribeToNativeNotificationUpdates(() => {
+      void refreshNotificationInbox();
+    });
+    return unsubscribe;
+  }, [refreshNotificationInbox]);
+
+  // Re-query UsageStats and Notification status automatically when returning from Android settings
   useEffect(() => {
     const sub = AppState.addEventListener(
       'change',
@@ -258,11 +353,12 @@ export default function App() {
           if (now - lastAutoRefreshAtRef.current >= 2500) {
             void syncUsageStats(false);
           }
+          void refreshNotificationStatus();
         }
       }
     );
     return () => sub.remove();
-  }, [hydrated, syncUsageStats]);
+  }, [hydrated, syncUsageStats, refreshNotificationStatus]);
 
   // Toast animation
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -355,6 +451,39 @@ export default function App() {
     appState.completedFocusBreaks,
     todayMoodLog
   );
+  const playerLevel = calculatePlayerLevel(totalXp);
+  const badgesUnlockedCount = badges.filter((b) => b.unlocked).length;
+  const weeklySummary = buildWeeklyAchievementSummary(appState, dateKey);
+
+  // Sync notification configuration and schedules to native Android WorkManager + AlarmManager
+  useEffect(() => {
+    if (!hydrated) return;
+    const anyNonLimitMissionDoneToday = missions.some(
+      (m) => m.done && m.id !== 'set-scroll-limit'
+    );
+    const streakActiveToday = isDateActiveForStreak(appState, dateKey, usageDisplay);
+    void syncNativeNotificationConfig({
+      dailyGentleNudge: appState.settings.dailyGentleNudge,
+      missionReminders: appState.settings.missionReminders,
+      streakReminders: appState.settings.streakReminders,
+      weekendBreathingRoom: appState.settings.weekendBreathingRoom,
+      consentAccepted: appState.consentStatus === 'accepted',
+      trackingEnabled: appState.trackingEnabled,
+      dailyLimitMinutes: appState.dailyLimitMinutes,
+      eveningReminderHour: appState.settings.eveningReminderHour ?? 19,
+      eveningReminderMinute: appState.settings.eveningReminderMinute ?? 0,
+      streakReminderHour: appState.settings.streakReminderHour ?? 21,
+      streakReminderMinute: appState.settings.streakReminderMinute ?? 0,
+      quietHoursEnabled: appState.settings.quietHoursEnabled !== false,
+      quietStartHour: appState.settings.quietStartHour ?? 22,
+      quietEndHour: appState.settings.quietEndHour ?? 8,
+      currentStreak: appState.streak?.currentStreak ?? 0,
+      syncedDateKey: dateKey,
+      anyNonLimitMissionDoneToday,
+      streakActiveToday,
+      sentKeysToday: appState.sentNotificationsByDate?.[dateKey] ?? [],
+    });
+  }, [hydrated, appState, dateKey, missions, usageDisplay]);
 
   // Evaluate and fire pending local notifications once per day when thresholds are met
   useEffect(() => {
@@ -373,6 +502,7 @@ export default function App() {
         for (const n of evalRes.notifications) {
           await sendLocalNotification(n.id, n.title, n.body);
         }
+        await refreshNotificationStatus();
       })();
     }
   }, [
@@ -381,6 +511,7 @@ export default function App() {
     limitProgress,
     dateKey,
     updateAndPersist,
+    refreshNotificationStatus,
   ]);
 
   function handleSaveDisplayName(rawName: string | null) {
@@ -455,12 +586,16 @@ export default function App() {
     }
   }
 
-  function handleCompleteFocusBreak(sessionId: string) {
+  function handleCompleteFocusBreak(
+    sessionId: string,
+    durationMinutes: number = 10
+  ) {
     setBreakOpen(false);
     const result = completeFocusBreakState(
       appStateRef.current,
       sessionId,
-      dateKey
+      dateKey,
+      durationMinutes
     );
     updateAndPersist(() => result.nextState);
     if (result.celebration) {
@@ -579,10 +714,13 @@ export default function App() {
 
   function handleToggleSetting(key: keyof UserSettings) {
     updateAndPersist((prev) => {
-      const nextVal = !prev.settings[key];
+      const prevVal =
+        key === 'achievementNotifications' || key === 'quietHoursEnabled'
+          ? prev.settings[key] !== false
+          : Boolean(prev.settings[key]);
       const nextSettings = {
         ...prev.settings,
-        [key]: nextVal,
+        [key]: !prevVal,
       };
       return {
         ...prev,
@@ -592,8 +730,22 @@ export default function App() {
     setToast('Preference saved locally.');
   }
 
+  function handleUpdateSettingsPatch(patch: Partial<UserSettings>) {
+    updateAndPersist((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        ...patch,
+      },
+    }));
+    setToast('Schedule updated.');
+  }
+
   function handleClearLocalHistory() {
     updateAndPersist((prev) => clearLocalHistoryState(prev, dateKey));
+    void clearNativeNotificationHistory().then((emptyInbox) => {
+      setNotificationInbox(emptyInbox);
+    });
     setToast('Local usage cache and mission history cleared.');
   }
 
@@ -615,21 +767,49 @@ export default function App() {
   }
 
   async function handleSendTestNotification() {
-    const allowed = await checkAndRequestNotificationPermission();
-    if (!allowed) {
-      setToast('Enable Android notification permission for ROT to receive nudges.');
+    await checkAndRequestNotificationPermission();
+    const status = await refreshNotificationStatus();
+    if (status.statusCode === 'permission_required') {
+      const msg =
+        'Android notification permission is currently denied. Tap "Open Android Notification Settings" to allow ROT notifications.';
+      setTestNotificationFeedback(msg);
+      setToast('Notification permission required.');
       return;
     }
-    const sent = await sendLocalNotification(
-      1999,
-      'ROT Gentle Nudge',
+    if (status.statusCode === 'notifications_off') {
+      const msg =
+        'Notifications are turned off for ROT in Android system settings.';
+      setTestNotificationFeedback(msg);
+      setToast('App notifications are disabled in Android.');
+      return;
+    }
+    if (status.statusCode === 'channel_disabled') {
+      const msg =
+        'The ROT Wellbeing Nudges channel is muted/disabled in Android settings.';
+      setTestNotificationFeedback(msg);
+      setToast('Wellbeing Nudges channel is disabled.');
+      return;
+    }
+
+    const body =
       limitProgress.nudgeMessage ||
-        `Your daily scroll target is ${limitProgress.limitFormatted}. Keep choosing balance!`
-    );
+      `Your daily scroll target is ${limitProgress.limitFormatted}. Keep choosing balance!`;
+    const sent = await sendLocalNotification(1999, 'ROT Gentle Nudge', body);
     if (sent) {
+      await refreshNotificationInbox();
+      const timeLabel = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      setTestNotificationFeedback(
+        `Delivered to Android notification shade at ${timeLabel}.`
+      );
       setToast('Test notification sent to your Android notification shade.');
     } else {
-      setToast('Notification queued (check system notification settings).');
+      setTestNotificationFeedback(
+        'Could not post notification—verify Android notification channel settings.'
+      );
+      setToast('Notification blocked by Android settings.');
     }
   }
 
@@ -679,6 +859,7 @@ export default function App() {
             onClaimWeeklyQuest={handleClaimWeeklyQuest}
             xpLedger={xpLedger}
             ledgerConsistent={ledgerConsistency.consistent}
+            scrollToLedgerRequestId={scrollToLedgerRequestId}
           />
         );
       case 'Badges':
@@ -704,9 +885,22 @@ export default function App() {
           <BrainrotCardScreen
             displayName={identity.displayName}
             totalXp={totalXp}
+            playerLevel={playerLevel}
+            currentStreak={appState.streak.currentStreak}
+            brainrotScore={brainrotIndex.score}
             archetypeTitle={brainrotIndex.archetypeTitle}
             archetypeDesc={brainrotIndex.archetypeDesc}
+            badgesUnlockedCount={badgesUnlockedCount}
+            weeklySummary={weeklySummary}
             privateMode={appState.settings.privateMode}
+            selectedCardType={appState.selectedCardType ?? 'archetype'}
+            selectedFormat={appState.selectedCardFormat ?? 'feed'}
+            onSelectCardType={(cardType: CardType) =>
+              updateAndPersist((prev) => ({ ...prev, selectedCardType: cardType }))
+            }
+            onSelectFormat={(format: CardExportFormat) =>
+              updateAndPersist((prev) => ({ ...prev, selectedCardFormat: format }))
+            }
             onEditName={() => setActiveView('Settings')}
             onToast={setToast}
           />
@@ -724,6 +918,8 @@ export default function App() {
             settings={appState.settings}
             usageSummary={usageSummary}
             usageDisplay={usageDisplay}
+            notificationStatus={notificationStatus}
+            testNotificationFeedback={testNotificationFeedback}
             onToggleTracking={(nextEnabled) => {
               updateAndPersist((prev) => ({
                 ...prev,
@@ -747,8 +943,20 @@ export default function App() {
                 );
               }
             }}
+            onOpenNotificationSettings={async (channelId) => {
+              const opened = await openAndroidNotificationSettings(channelId ?? null);
+              if (!opened) {
+                setToast('Open Android Settings > Apps > ROT > Notifications.');
+              }
+            }}
+            onRefreshNotificationStatus={() => {
+              void refreshNotificationStatus().then(() => {
+                setToast('Notification status refreshed.');
+              });
+            }}
             onChangeDailyLimit={handleChangeDailyLimit}
             onToggleSetting={handleToggleSetting}
+            onUpdateSettingsPatch={handleUpdateSettingsPatch}
             onClearLocalHistory={handleClearLocalHistory}
             onRefreshUsage={() => void syncUsageStats(true)}
             onExportUserData={() => void handleExportUserData()}
@@ -758,6 +966,24 @@ export default function App() {
         );
     }
   }
+
+  function handleOpenNotificationCenter() {
+    const unreadIds = notificationInbox.items
+      .filter((item) => !item.read)
+      .map((item) => item.id);
+    setHighlightedUnreadIds(unreadIds);
+    setNotificationCenterOpen(true);
+    void markAllNativeNotificationsRead().then((updatedInbox) => {
+      setNotificationInbox(updatedInbox);
+    });
+  }
+
+  function handleOpenXpLedger() {
+    setActiveView('Missions');
+    setScrollToLedgerRequestId((id) => id + 1);
+  }
+
+  const unreadBadgeText = formatUnreadBadgeCount(notificationInbox.unreadCount);
 
   return (
     <SafeAreaProvider>
@@ -778,21 +1004,35 @@ export default function App() {
           <View style={styles.topActions}>
             <TouchableOpacity
               style={styles.iconButton}
-              onPress={() =>
-                setToast(
-                  limitProgress.nudgeMessage ||
-                    `${appState.streak.currentStreak}-day streak active · Your brain approves.`
-                )
+              onPress={handleOpenNotificationCenter}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel={
+                unreadBadgeText
+                  ? `Notifications (${unreadBadgeText} unread)`
+                  : 'Notifications'
               }
             >
               <Feather name="bell" size={17} color={COLORS.purple} />
+              {unreadBadgeText !== null && (
+                <View style={styles.notifBadge}>
+                  <Text style={styles.notifBadgeText}>{unreadBadgeText}</Text>
+                </View>
+              )}
             </TouchableOpacity>
-            <View style={styles.xpPill}>
+            <TouchableOpacity
+              style={styles.xpPill}
+              onPress={handleOpenXpLedger}
+              activeOpacity={0.72}
+              accessibilityRole="button"
+              accessibilityLabel={`Brain Bank XP: ${totalXp} XP. Tap to view XP Ledger`}
+            >
               <Feather name="zap" size={13} color={COLORS.pink} />
               <Text style={styles.xpText}>
                 <Text style={styles.xpBold}>{totalXp}</Text> XP
               </Text>
-            </View>
+              <Feather name="chevron-right" size={11} color={COLORS.pink} />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -861,9 +1101,27 @@ export default function App() {
           />
         )}
 
+        {/* Notification Center Modal */}
+        <NotificationCenterModal
+          visible={notificationCenterOpen}
+          items={notificationInbox.items}
+          highlightedUnreadIds={highlightedUnreadIds}
+          notificationStatus={notificationStatus}
+          onClearAll={() => {
+            void clearNativeNotificationHistory().then((emptyInbox) => {
+              setNotificationInbox(emptyInbox);
+              setHighlightedUnreadIds([]);
+            });
+            setToast('Notification history cleared.');
+          }}
+          onOpenSettings={() => setActiveView('Settings')}
+          onClose={() => setNotificationCenterOpen(false)}
+        />
+
         {/* Toast */}
         {toast !== '' && (
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.toast,
               {
@@ -944,15 +1202,38 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
+    position: 'relative',
+  },
+  notifBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -5,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: '#ef4444',
+    borderWidth: 1.5,
+    borderColor: COLORS.cream,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  notifBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: COLORS.white,
+    includeFontPadding: false,
   },
   xpPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     paddingVertical: 7,
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     borderRadius: 30,
     backgroundColor: COLORS.palePink,
+    borderWidth: 1,
+    borderColor: '#f4c0d8',
   },
   xpText: {
     fontSize: 11,
@@ -1030,7 +1311,7 @@ const styles = StyleSheet.create({
   // Toast
   toast: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 92 : 76,
+    bottom: Platform.OS === 'ios' ? 98 : 88,
     left: 20,
     right: 20,
     backgroundColor: COLORS.ink,

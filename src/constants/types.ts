@@ -126,6 +126,69 @@ export type UserSettings = {
   weekendBreathingRoom: boolean;
   missionReminders: boolean;
   streakReminders: boolean;
+  achievementNotifications?: boolean;
+  eveningReminderHour?: number;
+  eveningReminderMinute?: number;
+  streakReminderHour?: number;
+  streakReminderMinute?: number;
+  quietHoursEnabled?: boolean;
+  quietStartHour?: number;
+  quietEndHour?: number;
+};
+
+export type CardType = 'archetype' | 'weekly';
+export type CardExportFormat = 'feed' | 'story';
+
+export type NotificationStatusSnapshot = {
+  runtimePermissionGranted: boolean;
+  appNotificationsEnabled: boolean;
+  nudgesChannelEnabled: boolean;
+  remindersChannelEnabled: boolean;
+  statusCode: 'allowed' | 'permission_required' | 'notifications_off' | 'channel_disabled';
+  quietHoursActiveNow: boolean;
+  sentKeysToday: string[];
+};
+
+export type NotificationInboxItem = {
+  id: string;
+  notificationId: number;
+  channelId: string;
+  title: string;
+  body: string;
+  createdAtMs: number;
+  dateKey: string;
+  read: boolean;
+};
+
+export type NotificationInboxSnapshot = {
+  unreadCount: number;
+  items: NotificationInboxItem[];
+};
+
+export type PlayerLevelInfo = {
+  level: number;
+  title: string;
+  currentLevelFloorXp: number;
+  nextLevelXp: number;
+  progressPercent: number;
+};
+
+export type WeeklyAchievementSummary = {
+  weekKey: string;
+  weekLabel: string;
+  hasAnyProgress: boolean;
+  weeklyXpEarned: number;
+  missionsCompletedThisWeek: number;
+  weeklyQuestsCompleted: number;
+  weeklyQuestsTotal: number;
+  currentStreak: number;
+  unlockedBadgeNames: string[];
+  unlockedBadgesCount: number;
+  totalBadgesCount: number;
+  headline: string;
+  tagline: string;
+  heroMetricLabel: string;
+  heroMetricValue: string;
 };
 
 export type StreakDayStatus = 'completed' | 'grace_used' | 'missed' | 'pending';
@@ -215,7 +278,7 @@ export type PendingLocalNotification = {
   key: string;
   title: string;
   body: string;
-  category: 'limit_80' | 'limit_100' | 'mission_reminder' | 'streak_reminder';
+  category: 'limit_80' | 'limit_100' | 'mission_reminder' | 'streak_reminder' | 'achievement';
 };
 
 export type UserDataExportPayload = {
@@ -269,4 +332,6 @@ export type PersistedAppState = {
   moodLogsByDate: Record<string, MoodLogEntry>;
   xpLedger: XpLedgerEntry[];
   sentNotificationsByDate: Record<string, string[]>;
+  selectedCardType?: CardType;
+  selectedCardFormat?: CardExportFormat;
 };

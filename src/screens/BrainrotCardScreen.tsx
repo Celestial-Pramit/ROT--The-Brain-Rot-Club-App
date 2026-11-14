@@ -1,14 +1,54 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { COLORS, RADIUS } from '../constants/theme';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+} from 'react-native';
+import { captureRef } from 'react-native-view-shot';
+import { COLORS, RADIUS, SCREEN_WIDTH } from '../constants/theme';
+import {
+  CardExportFormat,
+  CardType,
+  PlayerLevelInfo,
+  WeeklyAchievementSummary,
+} from '../constants/types';
+import {
+  formatCardExportFilename,
+  getLocalDateKey,
+} from '../utils/domainLogic';
+import {
+  prepareAndVerifyCardPng,
+  saveCardPngToGallery,
+  shareCardPngNative,
+} from '../utils/usageStats';
+import {
+  ArchetypeCardData,
+  ArchetypeCardPoster,
+  WeeklyAchievementPoster,
+  WeeklyCardData,
+} from '../components/ShareableCards';
+import CardSelectionModal from '../components/CardSelectionModal';
 import Icon from '../components/Icon';
 
 type Props = {
   displayName: string;
   totalXp: number;
+  playerLevel: PlayerLevelInfo;
+  currentStreak: number;
+  brainrotScore: number | null;
   archetypeTitle: string;
   archetypeDesc: string;
+  badgesUnlockedCount: number;
+  weeklySummary: WeeklyAchievementSummary;
   privateMode: boolean;
+  selectedCardType: CardType;
+  selectedFormat: CardExportFormat;
+  onSelectCardType: (cardType: CardType) => void;
+  onSelectFormat: (format: CardExportFormat) => void;
   onEditName: () => void;
   onToast: (message: string) => void;
 };
@@ -16,119 +56,377 @@ type Props = {
 export default function BrainrotCardScreen({
   displayName,
   totalXp,
+  playerLevel,
+  currentStreak,
+  brainrotScore,
   archetypeTitle,
   archetypeDesc,
+  badgesUnlockedCount,
+  weeklySummary,
   privateMode,
+  selectedCardType,
+  selectedFormat,
+  onSelectCardType,
+  onSelectFormat,
   onEditName,
   onToast,
 }: Props) {
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const [showStatsOnPrivateCard, setShowStatsOnPrivateCard] = useState(true);
+  const [busyAction, setBusyAction] = useState<'save' | 'share' | null>(null);
+  const exportStageRef = useRef<React.ComponentRef<typeof View>>(null);
+  const cardCarouselRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const hasLaidOutCarousel = useRef(false);
+  const wasSelectorOpenRef = useRef(false);
+
+  const pageWidth = SCREEN_WIDTH - 40;
+  const previewScale = Math.min(0.92, Math.max(0.74, (SCREEN_WIDTH - 48) / 360));
+  const targetWidth = 1080;
+  const targetHeight = selectedFormat === 'story' ? 1920 : 1350;
+
+  useEffect(() => {
+    const justClosed = wasSelectorOpenRef.current && !selectorOpen;
+    wasSelectorOpenRef.current = selectorOpen;
+    if (!hasLaidOutCarousel.current) return;
+    // Keep background carousel frozen at its current position while popup is open
+    if (selectorOpen) return;
+    const targetX = selectedCardType === 'archetype' ? 0 : pageWidth;
+    cardCarouselRef.current?.scrollTo({ x: targetX, animated: !justClosed });
+  }, [selectedCardType, pageWidth, selectorOpen]);
+
+  function handleCarouselLayout() {
+    if (!hasLaidOutCarousel.current) {
+      hasLaidOutCarousel.current = true;
+      if (selectedCardType === 'weekly') {
+        cardCarouselRef.current?.scrollTo({ x: pageWidth, animated: false });
+      }
+    }
+  }
+
+  function handleCarouselMomentumEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const offsetX = e.nativeEvent.contentOffset.x;
+    const nextType: CardType = offsetX >= pageWidth * 0.5 ? 'weekly' : 'archetype';
+    if (nextType !== selectedCardType) {
+      onSelectCardType(nextType);
+    }
+  }
+
+  const archetypeData: ArchetypeCardData = {
+    displayName,
+    totalXp,
+    playerLevel,
+    currentStreak,
+    brainrotScore,
+    archetypeTitle,
+    archetypeDesc,
+    badgesUnlockedCount,
+    privateMode,
+    showStatsOnPrivateCard,
+  };
+
+  const weeklyData: WeeklyCardData = {
+    displayName,
+    weekly: weeklySummary,
+    archetypeTitle,
+    totalXp,
+    privateMode,
+    showStatsOnPrivateCard,
+  };
+
+  async function renderSelectedCardPng() {
+    // Allow RN one tick to guarantee offscreen layout matches active cardType/format/options
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    if (!exportStageRef.current) {
+      throw new Error('Card capture surface is not ready.');
+    }
+    const rawUri = await captureRef(exportStageRef, {
+      format: 'png',
+      quality: 1,
+      width: targetWidth,
+      height: targetHeight,
+      result: 'tmpfile',
+    });
+
+    const dateKey = getLocalDateKey();
+    const filename = formatCardExportFilename(
+      selectedCardType,
+      displayName,
+      dateKey,
+      selectedFormat
+    );
+    const prepared = await prepareAndVerifyCardPng(
+      rawUri,
+      targetWidth,
+      targetHeight,
+      filename
+    );
+
+    const statsHash = `${totalXp}_${currentStreak}_${brainrotScore ?? 'p'}_${weeklySummary.weeklyXpEarned}_${weeklySummary.missionsCompletedThisWeek}_${showStatsOnPrivateCard ? '1' : '0'}_${privateMode ? 'priv' : 'pub'}`;
+    const dedupKey = `${selectedCardType}_${selectedFormat}_${dateKey}_${statsHash}`;
+
+    return { prepared, dedupKey };
+  }
+
+  async function handleSaveOnly() {
+    if (busyAction !== null) return;
+    setBusyAction('save');
+    try {
+      const { prepared, dedupKey } = await renderSelectedCardPng();
+      const galleryRes = await saveCardPngToGallery(
+        prepared.filePath,
+        prepared.filename,
+        dedupKey
+      );
+      const msg =
+        galleryRes.status === 'already_saved'
+          ? `Already saved in Gallery (${galleryRes.album}/${galleryRes.filename} · ${prepared.width}×${prepared.height}).`
+          : `Saved to Gallery: ${galleryRes.album}/${galleryRes.filename} (${prepared.width}×${prepared.height} PNG).`;
+      onToast(msg);
+      setSelectorOpen(false);
+    } catch (err: any) {
+      const msg =
+        err?.code === 'STORAGE_PERMISSION_DENIED'
+          ? 'Storage permission was denied. Enable storage access to save to Gallery.'
+          : err?.message || 'Could not save card PNG.';
+      onToast(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleSaveAndShare() {
+    if (busyAction !== null) return;
+    setBusyAction('share');
+    try {
+      const { prepared, dedupKey } = await renderSelectedCardPng();
+      const galleryRes = await saveCardPngToGallery(
+        prepared.filePath,
+        prepared.filename,
+        dedupKey
+      );
+      const shareText =
+        selectedCardType === 'archetype'
+          ? `ROT. Brainrot Club — ${archetypeTitle} (${totalXp} XP)`
+          : `ROT. Weekly Recap — ${weeklySummary.headline}`;
+
+      const shareRes = await shareCardPngNative(
+        prepared.filePath,
+        prepared.filename,
+        shareText,
+        !privateMode
+      );
+
+      let msg = '';
+      if (shareRes.status === 'no_app') {
+        msg = `Saved to ${galleryRes.album}/${galleryRes.filename}. No compatible image-sharing app found.`;
+      } else {
+        msg = `Ready in ${galleryRes.album}/${galleryRes.filename} (${prepared.width}×${prepared.height} PNG) · Share sheet opened.`;
+      }
+      onToast(msg);
+      setSelectorOpen(false);
+    } catch (err: any) {
+      const msg =
+        err?.code === 'STORAGE_PERMISSION_DENIED'
+          ? 'Storage permission was denied. Could not save or share card.'
+          : err?.message || 'Unable to generate or share card PNG.';
+      onToast(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Header */}
-      <Text style={styles.eyebrow}>YOUR UNOFFICIAL TITLE</Text>
-      <Text style={styles.heading}>
-        Meet your brainrot card<Text style={styles.dot}>.</Text>
-      </Text>
-      <Text style={styles.subtitle}>
-        A lovingly unserious snapshot of your scrolling era.
-      </Text>
+    <View style={{ flex: 1 }}>
+      {/* Offscreen High-Res Export Stage (720×900 / 720×1280 scaled to 1080×1350 / 1080×1920) */}
+      <View
+        pointerEvents="none"
+        collapsable={false}
+        style={styles.offscreenStageWrap}
+      >
+        <View ref={exportStageRef} collapsable={false}>
+          {selectedCardType === 'archetype' ? (
+            <ArchetypeCardPoster
+              data={archetypeData}
+              format={selectedFormat}
+              scale={2}
+            />
+          ) : (
+            <WeeklyAchievementPoster
+              data={weeklyData}
+              format={selectedFormat}
+              scale={2}
+            />
+          )}
+        </View>
+      </View>
 
-      <View style={styles.topBtnRow}>
-        <TouchableOpacity
-          style={styles.shareBtn}
-          onPress={() =>
-            onToast(
-              privateMode
-                ? 'Private mode is on: Card snapshot copied locally only.'
-                : 'Card copied to your imaginary story.'
-            )
-          }
-          activeOpacity={0.8}
+      <View
+        style={{ flex: 1 }}
+        pointerEvents={selectorOpen ? 'none' : 'auto'}
+      >
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          scrollEnabled={!selectorOpen}
         >
-          <Icon name="sparkles" size={14} color={COLORS.white} />
-          <Text style={styles.shareBtnText}>
-            {privateMode ? 'Save private card' : 'Share card'}
+          {/* Header */}
+          <Text style={styles.eyebrow}>COLLECTIBLE ROT CARDS</Text>
+          <Text style={styles.heading}>
+            Meet your brainrot cards<Text style={styles.dot}>.</Text>
           </Text>
-        </TouchableOpacity>
+          <Text style={styles.subtitle}>
+            Swipe between your Archetype and Weekly Achievement cards, then tap Save or Share to export.
+          </Text>
 
-        <TouchableOpacity
-          style={styles.editIdentityBtn}
-          onPress={onEditName}
-          activeOpacity={0.8}
-        >
-          <Icon name="edit" size={12} color={COLORS.purple} />
-          <Text style={styles.editIdentityBtnText}>{displayName}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Identity Card */}
-      <View style={styles.identityCard}>
-        <Text style={styles.cardStamp}>ROT. BRAINROT CLUB · {displayName.toUpperCase()}</Text>
-
-        {/* Brain mascot (large) */}
-        <View style={styles.largeMascot}>
-          <View style={styles.eyeLeft} />
-          <View style={styles.eyeRight} />
-          <View style={styles.mouth} />
-        </View>
-
-        <Text style={styles.eyebrow}>CURRENT ARCHETYPE</Text>
-        <Text style={styles.archetypeTitle}>{archetypeTitle}</Text>
-        <Text style={styles.archetypeDesc}>{archetypeDesc}</Text>
-        <View style={styles.divider} />
-        <Text style={styles.cardFoot}>
-          {displayName.toUpperCase()} · MEMBER SINCE 2026 · {totalXp} XP · {privateMode ? 'PRIVATE' : 'PUBLIC'}
-        </Text>
-      </View>
-
-      {/* Evolution Path */}
-      <View style={styles.detailPanel}>
-        <Text style={styles.eyebrow}>EVOLUTION PATH</Text>
-        <Text style={styles.detailTitle}>From newbie to grass toucher</Text>
-        <View style={styles.evolution}>
-          <View style={[styles.evoNode, styles.evoNodeActive]}>
-            <Text style={styles.evoEmoji}>◡</Text>
-            <Text style={styles.evoLabel}>Newbie</Text>
-          </View>
-          <View style={[styles.evoLine, styles.evoLineActive]} />
-          <View style={[styles.evoNode, styles.evoNodeActive]}>
-            <Text style={styles.evoEmoji}>◠</Text>
-            <Text style={styles.evoLabel}>{archetypeTitle}</Text>
-          </View>
-          <View style={[styles.evoLine, totalXp >= 400 && styles.evoLineActive]} />
-          <View style={[styles.evoNode, totalXp >= 400 && styles.evoNodeActive]}>
-            <Text
-              style={[
-                styles.evoEmoji,
-                { color: totalXp >= 400 ? COLORS.pink : '#b0a2bd' },
-              ]}
+          {/* Top Action Row */}
+          <View style={styles.topBtnRow}>
+            <TouchableOpacity
+              style={styles.shareBtn}
+              onPress={() => setSelectorOpen(true)}
+              activeOpacity={0.85}
             >
-              ★
-            </Text>
-            <Text style={styles.evoLabel}>Offline Legend</Text>
+              <Icon name="sparkles" size={14} color={COLORS.white} />
+              <Text style={styles.shareBtnText}>Save or Share</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.editIdentityBtn}
+              onPress={onEditName}
+              activeOpacity={0.8}
+            >
+              <Icon name="edit" size={12} color={COLORS.purple} />
+              <Text style={styles.editIdentityBtnText}>{displayName}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Horizontally Swipeable Card Browser */}
+          <ScrollView
+            ref={cardCarouselRef}
+            horizontal
+            pagingEnabled
+            nestedScrollEnabled
+            scrollEnabled={!selectorOpen}
+            decelerationRate="fast"
+            showsHorizontalScrollIndicator={false}
+            onLayout={handleCarouselLayout}
+            onMomentumScrollEnd={handleCarouselMomentumEnd}
+            style={styles.carouselScroll}
+          >
+          <View style={[styles.previewPage, { width: pageWidth }]}>
+            <View style={styles.previewFrame}>
+              <ArchetypeCardPoster
+                data={archetypeData}
+                format={selectedFormat}
+                scale={previewScale}
+              />
+            </View>
+          </View>
+
+          <View style={[styles.previewPage, { width: pageWidth }]}>
+            <View style={styles.previewFrame}>
+              <WeeklyAchievementPoster
+                data={weeklyData}
+                format={selectedFormat}
+                scale={previewScale}
+              />
+            </View>
+          </View>
+        </ScrollView>
+
+        {/* Subtle Non-Button Swipe Hint & Indicator Dots */}
+        <View style={styles.swipeHintRow}>
+          <View style={styles.dotIndicatorRow}>
+            <View
+              style={[
+                styles.dotIndicator,
+                selectedCardType === 'archetype' && styles.dotIndicatorActive,
+              ]}
+            />
+            <View
+              style={[
+                styles.dotIndicator,
+                selectedCardType === 'weekly' && styles.dotIndicatorActive,
+              ]}
+            />
+          </View>
+          <Text style={styles.swipeHintText}>
+            {selectedCardType === 'archetype'
+              ? 'Archetype Card · Swipe left for Weekly'
+              : 'Weekly Achievement · Swipe right for Archetype'}
+          </Text>
+        </View>
+
+        {/* Evolution Path */}
+        <View style={styles.detailPanel}>
+          <Text style={styles.eyebrow}>EVOLUTION PATH</Text>
+          <Text style={styles.detailTitle}>From newbie to offline legend</Text>
+          <View style={styles.evolution}>
+            <View style={[styles.evoNode, styles.evoNodeActive]}>
+              <Text style={styles.evoEmoji}>◡</Text>
+              <Text style={styles.evoLabel}>Newbie</Text>
+            </View>
+            <View style={[styles.evoLine, styles.evoLineActive]} />
+            <View style={[styles.evoNode, styles.evoNodeActive]}>
+              <Text style={styles.evoEmoji}>◠</Text>
+              <Text style={styles.evoLabel}>{archetypeTitle}</Text>
+            </View>
+            <View style={[styles.evoLine, totalXp >= 400 && styles.evoLineActive]} />
+            <View style={[styles.evoNode, totalXp >= 400 && styles.evoNodeActive]}>
+              <Text
+                style={[
+                  styles.evoEmoji,
+                  { color: totalXp >= 400 ? COLORS.pink : '#b0a2bd' },
+                ]}
+              >
+                ★
+              </Text>
+              <Text style={styles.evoLabel}>Offline Legend</Text>
+            </View>
           </View>
         </View>
+
+        {/* Quote Panel */}
+        <View style={styles.quotePanel}>
+          <Icon name="sparkles" size={16} color={COLORS.pink} />
+          <Text style={styles.quoteText}>
+            "Your brain is not broken. It just has excellent taste in tiny videos."
+          </Text>
+          <Text style={styles.quoteAuthor}>— ROT. daily wisdom</Text>
+        </View>
+        </ScrollView>
       </View>
 
-      {/* Quote Panel */}
-      <View style={styles.quotePanel}>
-        <Icon name="sparkles" size={16} color={COLORS.pink} />
-        <Text style={styles.quoteText}>
-          "Your brain is not broken. It just has excellent taste in tiny videos."
-        </Text>
-        <Text style={styles.quoteAuthor}>— ROT. daily wisdom</Text>
-      </View>
-    </ScrollView>
+      {/* Cute Dual Card Swipe Selection Popup */}
+      <CardSelectionModal
+        visible={selectorOpen}
+        selectedCardType={selectedCardType}
+        selectedFormat={selectedFormat}
+        privateMode={privateMode}
+        showStatsOnPrivateCard={showStatsOnPrivateCard}
+        busyAction={busyAction}
+        archetypeData={archetypeData}
+        weeklyData={weeklyData}
+        onSelectCardType={onSelectCardType}
+        onSelectFormat={onSelectFormat}
+        onTogglePrivateStats={() => setShowStatsOnPrivateCard((v) => !v)}
+        onSaveCard={() => void handleSaveOnly()}
+        onShareCard={() => void handleSaveAndShare()}
+        onClose={() => setSelectorOpen(false)}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  offscreenStageWrap: {
+    position: 'absolute',
+    left: -9999,
+    top: 0,
+    opacity: 1,
+  },
   scroll: { flex: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
+  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 34 },
   eyebrow: {
     fontSize: 10,
     fontWeight: '700',
@@ -136,42 +434,42 @@ const styles = StyleSheet.create({
     color: COLORS.pink,
   },
   heading: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: '700',
     color: COLORS.ink,
     letterSpacing: -1,
     marginTop: 8,
-    lineHeight: 34,
+    lineHeight: 32,
   },
   dot: { color: COLORS.pink },
   subtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: COLORS.muted,
     marginTop: 6,
-    lineHeight: 20,
+    lineHeight: 19,
   },
   topBtnRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     marginTop: 14,
-    marginBottom: 20,
+    marginBottom: 14,
     flexWrap: 'wrap',
   },
   shareBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 7,
     paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    paddingHorizontal: 18,
+    borderRadius: 12,
     backgroundColor: COLORS.pink,
     shadowColor: '#bf256b',
     shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
-  shareBtnText: { fontSize: 12, fontWeight: '700', color: COLORS.white },
+  shareBtnText: { fontSize: 13, fontWeight: '800', color: COLORS.white },
   editIdentityBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -188,99 +486,49 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.purple,
   },
-
-  // Identity Card
-  identityCard: {
-    borderWidth: 2,
-    borderColor: COLORS.purple,
-    borderRadius: RADIUS.xxl,
-    backgroundColor: COLORS.white,
-    padding: 22,
+  carouselScroll: {
+    marginBottom: 10,
+  },
+  previewPage: {
     alignItems: 'center',
-    marginBottom: 16,
-    shadowColor: '#f2bddc',
-    shadowOpacity: 0.5,
-    shadowOffset: { width: 6, height: 6 },
+    paddingVertical: 2,
+  },
+  previewFrame: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: COLORS.darkPurple,
+    backgroundColor: COLORS.cream,
+    shadowColor: '#29104c',
+    shadowOpacity: 0.16,
+    shadowOffset: { width: 0, height: 8 },
     elevation: 6,
   },
-  cardStamp: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    color: COLORS.pink,
+  swipeHintRow: {
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 16,
   },
-  largeMascot: {
-    width: 140,
-    height: 120,
-    borderRadius: 60,
+  dotIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dotIndicator: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#d9c9ed',
+  },
+  dotIndicatorActive: {
+    width: 18,
     backgroundColor: COLORS.pink,
-    borderWidth: 4,
-    borderColor: COLORS.darkPurple,
-    marginVertical: 24,
-    position: 'relative',
-    transform: [{ rotate: '-4deg' }],
-    shadowColor: '#f8b8cf',
-    shadowOpacity: 0.5,
-    shadowOffset: { width: 6, height: 6 },
-    elevation: 5,
   },
-  eyeLeft: {
-    position: 'absolute',
-    top: 44,
-    left: 28,
-    width: 20,
-    height: 12,
-    borderTopWidth: 4,
-    borderTopColor: COLORS.darkPurple,
-    borderRadius: 10,
-  },
-  eyeRight: {
-    position: 'absolute',
-    top: 44,
-    right: 28,
-    width: 20,
-    height: 12,
-    borderTopWidth: 4,
-    borderTopColor: COLORS.darkPurple,
-    borderRadius: 10,
-  },
-  mouth: {
-    position: 'absolute',
-    bottom: 24,
-    left: 50,
-    width: 22,
-    height: 10,
-    borderBottomWidth: 4,
-    borderBottomColor: COLORS.darkPurple,
-    borderRadius: 10,
-  },
-  archetypeTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.ink,
-    letterSpacing: -0.7,
-    marginTop: 8,
-  },
-  archetypeDesc: {
-    fontSize: 13,
+  swipeHintText: {
+    fontSize: 11,
+    fontWeight: '600',
     color: COLORS.muted,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 6,
   },
-  divider: {
-    width: '100%',
-    height: 1,
-    backgroundColor: COLORS.line,
-    marginVertical: 18,
-  },
-  cardFoot: {
-    fontSize: 9,
-    color: COLORS.muted,
-    letterSpacing: 0.6,
-  },
-
-  // Detail panels
   detailPanel: {
     backgroundColor: COLORS.white,
     borderWidth: 1,
@@ -334,15 +582,13 @@ const styles = StyleSheet.create({
   evoLineActive: {
     backgroundColor: COLORS.pink,
   },
-
-  // Quote
   quotePanel: {
     backgroundColor: '#fff0f6',
     borderWidth: 1,
     borderColor: '#ffd3e6',
     borderRadius: RADIUS.xl,
     padding: 22,
-    marginTop: 16,
+    marginTop: 8,
   },
   quoteText: {
     fontSize: 16,

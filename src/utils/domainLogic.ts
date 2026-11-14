@@ -8,6 +8,8 @@ import {
 import {
   Badge,
   BrainrotBreakdown,
+  CardExportFormat,
+  CardType,
   Celebration,
   ConsentStatus,
   DailyChest,
@@ -17,11 +19,14 @@ import {
   MoodLogEntry,
   PendingLocalNotification,
   PersistedAppState,
+  PlayerLevelInfo,
   StreakState,
   UsageDataStatus,
   UsageQueryResult,
   UserDataExportPayload,
   UserProfile,
+  UserSettings,
+  WeeklyAchievementSummary,
   WeeklyQuest,
   WeeklyQuestId,
   WeeklyQuestState,
@@ -776,7 +781,8 @@ export function calculateBrainrotIndex(
   // Higher score (up to 100) = healthier balance ("More soul"); lower score = heavier scroll ("More scroll")
   const rawBase = Math.round(100 - ratio * 55);
   const missionBonus = mBonus + bBonus;
-  const score = Math.max(12, Math.min(99, rawBase + missionBonus));
+  const uncappedTotal = rawBase + missionBonus;
+  const score = Math.max(12, Math.min(99, uncappedTotal));
 
   const breakdown: BrainrotBreakdown = {
     baseScore: Math.max(0, Math.min(100, rawBase)),
@@ -787,7 +793,9 @@ export function calculateBrainrotIndex(
     summaryText: `${usageRatioPercent}% of ${formatMinutesAsHoursAndMinutes(safeLimit).compact} target (base ${Math.max(
       0,
       rawBase
-    )}) + ${mBonus} mission pts + ${bBonus} break pts = ${score}/100`,
+    )}) + ${mBonus} mission pts + ${bBonus} break pts = ${score}/100${
+      uncappedTotal > 99 ? ' (capped at 99)' : ''
+    }`,
   };
 
   if (score >= 70) {
@@ -896,6 +904,14 @@ export function createInitialPersistedState(
       weekendBreathingRoom: false,
       missionReminders: true,
       streakReminders: true,
+      achievementNotifications: true,
+      eveningReminderHour: 19,
+      eveningReminderMinute: 0,
+      streakReminderHour: 21,
+      streakReminderMinute: 0,
+      quietHoursEnabled: true,
+      quietStartHour: 22,
+      quietEndHour: 8,
     },
     baseXp: DEFAULT_BASE_XP,
     claimedXpEvents: {},
@@ -914,6 +930,8 @@ export function createInitialPersistedState(
     moodLogsByDate: {},
     xpLedger: [],
     sentNotificationsByDate: {},
+    selectedCardType: 'archetype',
+    selectedCardFormat: 'feed',
   };
 }
 
@@ -1036,9 +1054,11 @@ function inferCategoryAndTitleFromEventKey(eventKey: string): {
   }
   if (parts[0] === 'break') {
     const dateKey = parts[1] || getLocalDateKey();
+    const durPart = parts.find((p) => p.startsWith('dur'));
+    const mins = durPart ? Number.parseInt(durPart.slice(3), 10) : NaN;
     return {
       category: 'focus_break',
-      title: '10-Minute Focus Break',
+      title: Number.isFinite(mins) && mins > 0 ? `${mins}-Minute Focus Break` : 'Focus Break Reset',
       dateKey,
     };
   }
@@ -1911,9 +1931,23 @@ export function logDailyMoodState(
   };
 }
 
+export function isWithinQuietHours(
+  settings: UserSettings,
+  currentHour: number = new Date().getHours()
+): boolean {
+  if (settings.quietHoursEnabled === false) return false;
+  const start = settings.quietStartHour ?? 22;
+  const end = settings.quietEndHour ?? 8;
+  if (start === end) return false;
+  if (start > end) {
+    return currentHour >= start || currentHour < end;
+  }
+  return currentHour >= start && currentHour < end;
+}
+
 /**
- * Evaluates which local notifications should fire based on user preferences, usage progress,
- * missions, and streak status, ensuring each notification key fires at most once per dateKey.
+ * Evaluates which local notifications should fire based on user preferences, quiet hours,
+ * usage progress, missions, and streak status, ensuring each notification key fires at most once per dateKey.
  */
 export function evaluatePendingNotifications(
   state: PersistedAppState,
@@ -1925,6 +1959,10 @@ export function evaluatePendingNotifications(
   nextState: PersistedAppState;
   notifications: PendingLocalNotification[];
 } {
+  if (isWithinQuietHours(state.settings, currentHour)) {
+    return { nextState: state, notifications: [] };
+  }
+
   const sentToday = new Set<string>(state.sentNotificationsByDate?.[dateKey] ?? []);
   const notifications: PendingLocalNotification[] = [];
 
@@ -1935,7 +1973,7 @@ export function evaluatePendingNotifications(
         id: 1001,
         key: 'limit_100',
         title: 'Daily scroll target reached',
-        body: 'You passed your daily Instagram target. No guilt—a 10-minute focus break is a great way to reset.',
+        body: 'You passed your daily Instagram target. No guilt—a focus break is a great way to reset.',
         category: 'limit_100',
       });
     } else if (limitProgress.isNearLimit && !sentToday.has('limit_80')) {
@@ -1952,7 +1990,12 @@ export function evaluatePendingNotifications(
     }
   }
 
-  if (state.settings.missionReminders && currentHour >= 18 && !sentToday.has('mission_reminder')) {
+  const eveningHour = state.settings.eveningReminderHour ?? 19;
+  if (
+    state.settings.missionReminders &&
+    currentHour >= eveningHour &&
+    !sentToday.has('mission_reminder')
+  ) {
     const missions = getMissionsForDate(state, dateKey, usageDisplay);
     const anyCompleted = missions.some((m) => m.done && m.id !== 'set-scroll-limit');
     if (!anyCompleted) {
@@ -1967,9 +2010,10 @@ export function evaluatePendingNotifications(
     }
   }
 
+  const streakHour = state.settings.streakReminderHour ?? 21;
   if (
     state.settings.streakReminders &&
-    currentHour >= 20 &&
+    currentHour >= streakHour &&
     !sentToday.has('streak_reminder') &&
     state.streak?.currentStreak > 0 &&
     !isDateActiveForStreak(state, dateKey, usageDisplay)
@@ -1982,6 +2026,26 @@ export function evaluatePendingNotifications(
       body: 'Take a quick focus break or log your brain mood before midnight.',
       category: 'streak_reminder',
     });
+  }
+
+  if (state.settings.achievementNotifications !== false) {
+    const unlockedEntries = Object.entries(state.unlockedBadges ?? {}).filter(
+      ([, unlockedOn]) => unlockedOn === dateKey
+    );
+    if (unlockedEntries.length > 0 && !sentToday.has(`badge_unlocked_${unlockedEntries.length}`)) {
+      // Only mark once per badge milestone count on that day if a non-default badge unlocked
+      const nonDefault = unlockedEntries.filter(([id]) => id !== 'first-flight' && id !== 'limit-setter');
+      if (nonDefault.length > 0 && !sentToday.has('achievement_badge_today')) {
+        sentToday.add('achievement_badge_today');
+        notifications.push({
+          id: 1006,
+          key: 'achievement_badge_today',
+          title: 'New ROT Badge Unlocked!',
+          body: `You unlocked ${nonDefault.length} new badge${nonDefault.length > 1 ? 's' : ''} today. Check your Card or Badges tab!`,
+          category: 'achievement',
+        });
+      }
+    }
   }
 
   if (notifications.length === 0) {
@@ -1997,6 +2061,142 @@ export function evaluatePendingNotifications(
   };
 
   return { nextState, notifications };
+}
+
+export function calculatePlayerLevel(totalXp: number): PlayerLevelInfo {
+  const safeXp = Math.max(0, Math.round(totalXp));
+  const STEP = 100;
+  const level = Math.max(1, Math.floor(safeXp / STEP) + 1);
+  const currentLevelFloorXp = (level - 1) * STEP;
+  const nextLevelXp = level * STEP;
+  const progressPercent = Math.max(
+    0,
+    Math.min(100, Math.round(((safeXp - currentLevelFloorXp) / STEP) * 100))
+  );
+
+  const titles = [
+    'Scroll Curious',
+    'Tab Closer',
+    'Soft Launcher',
+    'Mindful Scroller',
+    'Focus Apprentice',
+    'Balance Builder',
+    'Grass Toucher',
+    'Offline Explorer',
+    'Brainrot Tamer',
+    'Offline Legend',
+  ];
+  const title = titles[Math.min(titles.length - 1, level - 1)];
+
+  return {
+    level,
+    title,
+    currentLevelFloorXp,
+    nextLevelXp,
+    progressPercent,
+  };
+}
+
+export function formatCardExportFilename(
+  cardType: CardType,
+  displayName: string,
+  dateKey: string = getLocalDateKey(),
+  format: CardExportFormat = 'feed'
+): string {
+  const cleanName = (displayName || 'User')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9_-]/g, '')
+    .slice(0, 20) || 'User';
+  const cleanDate = dateKey.replace(/[^0-9]/g, '').slice(0, 8) || '20261115';
+  const typePrefix =
+    cardType === 'archetype' ? 'ROT_Archetype' : 'ROT_Weekly_Achievement';
+  const suffix = format === 'story' ? '_Story' : '';
+  return `${typePrefix}_${cleanName}_${cleanDate}${suffix}.png`;
+}
+
+export function buildWeeklyAchievementSummary(
+  state: PersistedAppState,
+  dateKey: string = getLocalDateKey()
+): WeeklyAchievementSummary {
+  const weekKey = getLocalWeekKey(dateKey);
+  const weekStartStr = weekKey.replace(/^week-/, '');
+  const weekStartDate = parseLocalDateKey(weekStartStr);
+  const weekEndDate = new Date(weekStartDate);
+  weekEndDate.setDate(weekEndDate.getDate() + 6);
+  const weekEndStr = `${weekEndDate.getFullYear()}-${String(
+    weekEndDate.getMonth() + 1
+  ).padStart(2, '0')}-${String(weekEndDate.getDate()).padStart(2, '0')}`;
+
+  const ledger = getXpLedgerEntries(state);
+  const weeklyXpEarned = ledger
+    .filter(
+      (entry) =>
+        entry.category !== 'baseline' &&
+        entry.dateKey >= weekStartStr &&
+        entry.dateKey <= weekEndStr
+    )
+    .reduce((sum, entry) => sum + entry.amount, 0);
+
+  let missionsCompletedThisWeek = 0;
+  for (const [dKey, map] of Object.entries(state.missionsByDate ?? {})) {
+    if (dKey >= weekStartStr && dKey <= weekEndStr) {
+      missionsCompletedThisWeek += Object.values(map).filter(Boolean).length;
+    }
+  }
+
+  const weeklyQuestState = getWeeklyQuestState(state, dateKey);
+  const weeklyQuestsCompleted = weeklyQuestState.quests.filter(
+    (q) => q.completed
+  ).length;
+  const weeklyQuestsTotal = weeklyQuestState.quests.length;
+
+  const todayMissions = getMissionsForDate(state, dateKey);
+  const badges = getBadges(
+    todayMissions,
+    state.completedFocusBreaks,
+    state.unlockedBadges
+  );
+  const unlockedBadges = badges.filter((b) => b.unlocked);
+  const unlockedBadgeNames = unlockedBadges.map((b) => b.name);
+  const currentStreak = state.streak?.currentStreak ?? 0;
+
+  const hasAnyProgress =
+    weeklyXpEarned > 0 ||
+    missionsCompletedThisWeek > 0 ||
+    weeklyQuestsCompleted > 0 ||
+    unlockedBadges.length > 0;
+
+  let headline = 'YOUR RESET BEGINS.';
+  let tagline = 'Complete a mission or focus break to start your weekly highlight reel.';
+  if (weeklyQuestsCompleted >= 2 || weeklyXpEarned >= 250) {
+    headline = 'YOUR WEEK, YOUR RULES.';
+    tagline = 'Real resets, steady streaks, and zero feed guilt.';
+  } else if (weeklyXpEarned >= 100 || missionsCompletedThisWeek >= 3) {
+    headline = 'SMALL WINS. BIG XP.';
+    tagline = 'Showing up offline adds up faster than doomscrolling.';
+  } else if (hasAnyProgress) {
+    headline = 'LESS SCROLL. MORE CONTROL.';
+    tagline = 'Every intentional break puts you back in charge of your attention.';
+  }
+
+  return {
+    weekKey,
+    weekLabel: `WEEK OF ${weekStartStr}`,
+    hasAnyProgress,
+    weeklyXpEarned,
+    missionsCompletedThisWeek,
+    weeklyQuestsCompleted,
+    weeklyQuestsTotal,
+    currentStreak,
+    unlockedBadgeNames,
+    unlockedBadgesCount: unlockedBadges.length,
+    totalBadgesCount: badges.length,
+    headline,
+    tagline,
+    heroMetricLabel: hasAnyProgress ? 'XP EARNED THIS WEEK' : 'READY FOR DAY ONE',
+    heroMetricValue: hasAnyProgress ? `+${weeklyXpEarned}` : '0 XP',
+  };
 }
 
 /**
@@ -2154,9 +2354,11 @@ export function claimDailyChestState(
 export function completeFocusBreakState(
   state: PersistedAppState,
   sessionId: string,
-  dateKey: string = getLocalDateKey()
+  dateKey: string = getLocalDateKey(),
+  durationMinutes: number = 10
 ): StateTransitionResult {
-  const breakEventKey = `break:${dateKey}:${sessionId}`;
+  const safeDuration = Math.max(1, Math.round(durationMinutes));
+  const breakEventKey = `break:${dateKey}:${sessionId}:dur${safeDuration}`;
   if (state.claimedXpEvents[breakEventKey]) {
     return {
       nextState: state,
@@ -2174,7 +2376,7 @@ export function completeFocusBreakState(
   const nextLedger = appendXpTransaction(
     state.xpLedger,
     breakEventKey,
-    '10-Minute Focus Break',
+    `${safeDuration}-Minute Focus Break`,
     FOCUS_BREAK_XP_REWARD,
     'focus_break',
     dateKey
@@ -2287,4 +2489,11 @@ export function clearLocalHistoryState(
     xpLedger: [],
     sentNotificationsByDate: {},
   };
+}
+
+export function formatUnreadBadgeCount(count: number): string | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const whole = Math.floor(count);
+  if (whole <= 0) return null;
+  return whole > 99 ? '99+' : String(whole);
 }

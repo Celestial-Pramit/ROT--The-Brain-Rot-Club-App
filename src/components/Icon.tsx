@@ -43,6 +43,10 @@ const iconMap: Record<string, string> = {
   'minus': 'minus',
   'calendar': 'calendar',
   'file-text': 'file-text',
+  'moon': 'moon',
+  'check-square': 'check-square',
+  'square': 'square',
+  'image': 'image',
 };
 
 type Props = {
