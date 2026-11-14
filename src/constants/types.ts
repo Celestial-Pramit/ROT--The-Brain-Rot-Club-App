@@ -60,8 +60,14 @@ export type ConsentStatus = 'pending' | 'accepted' | 'declined';
 
 export type UsageDataStatus =
   | 'ok'
+  | 'zero_usage'
   | 'permission_required'
+  | 'tracking_paused'
   | 'not_installed'
+  | 'no_os_record'
+  | 'query_failed'
+  | 'stale'
+  | 'incomplete'
   | 'unavailable'
   | 'tracking_disabled';
 
@@ -84,9 +90,26 @@ export type InstagramUsageSummary = {
   queriedAtMs: number;
   dailyBreakdown: DailyUsagePoint[];
   aggregationSource?: string;
+  isComplete?: boolean | 'unknown';
+  errorCode?: string;
+  deviceName?: string;
   manufacturer?: string;
   model?: string;
   sdkInt?: number;
+};
+
+export type UsageQueryResult = {
+  status: UsageDataStatus;
+  estimatedMinutes: number | null;
+  lastUpdatedAt: number | null;
+  source: string;
+  isComplete: boolean | 'unknown';
+  errorCode?: string;
+};
+
+export type UserProfile = {
+  customDisplayName: string | null;
+  deviceDefaultName: string | null;
 };
 
 export type UserSettings = {
@@ -101,6 +124,7 @@ export type PersistedAppState = {
   consentUpdatedAt: string | null;
   trackingEnabled: boolean;
   dailyLimitMinutes: number;
+  profile: UserProfile;
   settings: UserSettings;
   baseXp: number;
   claimedXpEvents: Record<string, number>;

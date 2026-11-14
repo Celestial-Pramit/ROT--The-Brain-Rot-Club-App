@@ -45,6 +45,14 @@ for (const file of files) {
     );
     errors++;
   }
+
+  // Part B check: Ensure hardcoded "Rafi" identity is never present in source files
+  if (!rel.includes('__tests__') && /\bRafi\b|\brafi\./.test(content)) {
+    console.error(
+      `[LINT ERROR] ${rel}: Contains hardcoded 'Rafi' identity reference.`
+    );
+    errors++;
+  }
 }
 
 if (errors > 0) {

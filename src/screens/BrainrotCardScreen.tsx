@@ -4,18 +4,22 @@ import { COLORS, RADIUS } from '../constants/theme';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
   totalXp: number;
   archetypeTitle: string;
   archetypeDesc: string;
   privateMode: boolean;
+  onEditName: () => void;
   onToast: (message: string) => void;
 };
 
 export default function BrainrotCardScreen({
+  displayName,
   totalXp,
   archetypeTitle,
   archetypeDesc,
   privateMode,
+  onEditName,
   onToast,
 }: Props) {
   return (
@@ -33,26 +37,37 @@ export default function BrainrotCardScreen({
         A lovingly unserious snapshot of your scrolling era.
       </Text>
 
-      <TouchableOpacity
-        style={styles.shareBtn}
-        onPress={() =>
-          onToast(
-            privateMode
-              ? 'Private mode is on: Card snapshot copied locally only.'
-              : 'Card copied to your imaginary story.'
-          )
-        }
-        activeOpacity={0.8}
-      >
-        <Icon name="sparkles" size={14} color={COLORS.white} />
-        <Text style={styles.shareBtnText}>
-          {privateMode ? 'Save private card' : 'Share card'}
-        </Text>
-      </TouchableOpacity>
+      <View style={styles.topBtnRow}>
+        <TouchableOpacity
+          style={styles.shareBtn}
+          onPress={() =>
+            onToast(
+              privateMode
+                ? 'Private mode is on: Card snapshot copied locally only.'
+                : 'Card copied to your imaginary story.'
+            )
+          }
+          activeOpacity={0.8}
+        >
+          <Icon name="sparkles" size={14} color={COLORS.white} />
+          <Text style={styles.shareBtnText}>
+            {privateMode ? 'Save private card' : 'Share card'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.editIdentityBtn}
+          onPress={onEditName}
+          activeOpacity={0.8}
+        >
+          <Icon name="edit" size={12} color={COLORS.purple} />
+          <Text style={styles.editIdentityBtnText}>{displayName}</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Identity Card */}
       <View style={styles.identityCard}>
-        <Text style={styles.cardStamp}>ROT. BRAINROT CLUB</Text>
+        <Text style={styles.cardStamp}>ROT. BRAINROT CLUB · {displayName.toUpperCase()}</Text>
 
         {/* Brain mascot (large) */}
         <View style={styles.largeMascot}>
@@ -66,7 +81,7 @@ export default function BrainrotCardScreen({
         <Text style={styles.archetypeDesc}>{archetypeDesc}</Text>
         <View style={styles.divider} />
         <Text style={styles.cardFoot}>
-          MEMBER SINCE 2026 · {totalXp} XP · {privateMode ? 'PRIVATE' : 'PUBLIC'}
+          {displayName.toUpperCase()} · MEMBER SINCE 2026 · {totalXp} XP · {privateMode ? 'PRIVATE' : 'PUBLIC'}
         </Text>
       </View>
 
@@ -135,6 +150,14 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 20,
   },
+  topBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 20,
+    flexWrap: 'wrap',
+  },
   shareBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -143,15 +166,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 10,
     backgroundColor: COLORS.pink,
-    alignSelf: 'flex-start',
-    marginTop: 14,
-    marginBottom: 20,
     shadowColor: '#bf256b',
     shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
   shareBtnText: { fontSize: 12, fontWeight: '700', color: COLORS.white },
+  editIdentityBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+    borderWidth: 1,
+    borderColor: '#e4d6f4',
+  },
+  editIdentityBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
 
   // Identity Card
   identityCard: {

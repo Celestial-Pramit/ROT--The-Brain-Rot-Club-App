@@ -17,6 +17,10 @@ export async function loadPersistedState(
     const merged: PersistedAppState = {
       ...fallback,
       ...parsed,
+      profile: {
+        ...fallback.profile,
+        ...(parsed.profile ?? {}),
+      },
       settings: {
         ...fallback.settings,
         ...(parsed.settings ?? {}),

@@ -1,17 +1,33 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+} from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { DAILY_LIMIT_OPTIONS } from '../constants/data';
 import { ConsentStatus, InstagramUsageSummary, UserSettings } from '../constants/types';
-import { formatMinutesAsHoursAndMinutes } from '../utils/domainLogic';
+import {
+  formatMinutesAsHoursAndMinutes,
+  MAX_DISPLAY_NAME_LENGTH,
+  UsageDisplayState,
+} from '../utils/domainLogic';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
+  customDisplayName: string | null;
+  deviceDefaultName: string | null;
+  onSaveDisplayName: (rawName: string | null) => void;
   consentStatus: ConsentStatus;
   trackingEnabled: boolean;
   dailyLimitMinutes: number;
   settings: UserSettings;
   usageSummary: InstagramUsageSummary | null;
+  usageDisplay: UsageDisplayState;
   onToggleTracking: (nextEnabled: boolean) => void;
   onOpenUsageSetup: () => void;
   onOpenSystemUsageSettings: () => void;
@@ -55,11 +71,16 @@ function SettingRow({
 }
 
 export default function SettingsScreen({
+  displayName,
+  customDisplayName,
+  deviceDefaultName,
+  onSaveDisplayName,
   consentStatus,
   trackingEnabled,
   dailyLimitMinutes,
   settings,
   usageSummary,
+  usageDisplay,
   onToggleTracking,
   onOpenUsageSetup,
   onOpenSystemUsageSettings,
@@ -69,6 +90,11 @@ export default function SettingsScreen({
   onRefreshUsage,
 }: Props) {
   const [confirmClear, setConfirmClear] = useState(false);
+  const [draftName, setDraftName] = useState(customDisplayName ?? displayName);
+
+  useEffect(() => {
+    setDraftName(customDisplayName ?? displayName);
+  }, [customDisplayName, displayName]);
 
   const permissionGranted = Boolean(usageSummary?.permissionGranted);
   const instagramInstalled = Boolean(usageSummary?.instagramInstalled);
@@ -90,18 +116,87 @@ export default function SettingsScreen({
         ROT works around your life. Never the other way around.
       </Text>
 
+      {/* Profile & Display Name Section */}
+      <Text style={styles.sectionEyebrow}>PROFILE & DISPLAY NAME</Text>
+      <View style={styles.profileCard}>
+        <View style={styles.limitHeader}>
+          <View style={styles.settingIcon}>
+            <Icon name="user" size={18} color={COLORS.purple} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingTitle}>Display name: {displayName}</Text>
+            <Text style={styles.settingDetail}>
+              {customDisplayName
+                ? `Custom name active · Device fallback: ${deviceDefaultName || 'ROT User'}`
+                : `Using Android device default (${deviceDefaultName || 'ROT User'})`}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.nameInputRow}>
+          <TextInput
+            style={styles.nameInput}
+            value={draftName}
+            onChangeText={setDraftName}
+            maxLength={MAX_DISPLAY_NAME_LENGTH}
+            placeholder={deviceDefaultName || 'ROT User'}
+            placeholderTextColor="#a395b2"
+            autoCapitalize="words"
+            returnKeyType="done"
+            onSubmitEditing={() => onSaveDisplayName(draftName)}
+          />
+          {draftName.length > 0 && (
+            <TouchableOpacity
+              style={styles.nameClearBtn}
+              onPress={() => setDraftName('')}
+              activeOpacity={0.75}
+              accessibilityLabel="Clear display name input"
+            >
+              <Icon name="x" size={14} color={COLORS.muted} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={styles.nameSaveBtn}
+            onPress={() => onSaveDisplayName(draftName)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.nameSaveBtnText}>Save</Text>
+          </TouchableOpacity>
+        </View>
+        {customDisplayName && (
+          <TouchableOpacity
+            style={styles.nameResetBtn}
+            onPress={() => {
+              setDraftName(deviceDefaultName || 'ROT User');
+              onSaveDisplayName(null);
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.nameResetBtnText}>
+              Revert to device name ({deviceDefaultName || 'ROT User'})
+            </Text>
+          </TouchableOpacity>
+        )}
+        <Text style={styles.profileHint}>
+          Stored locally on this device only. No account, phone number, or contacts required.
+        </Text>
+      </View>
+
       {/* Usage Access & Consent Section */}
-      <Text style={styles.sectionEyebrow}>INSTAGRAM USAGE TRACKING</Text>
+      <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
+        INSTAGRAM USAGE TRACKING
+      </Text>
       <View style={styles.settingsList}>
         <SettingRow
           iconName="bar-chart"
           title="Enable Instagram foreground tracking"
           detail={
             consentStatus !== 'accepted'
-              ? 'Requires your consent and Android Usage Access'
+              ? 'ROT needs Usage Access to estimate your Instagram screen time.'
+              : !trackingEnabled
+              ? 'Tracking is paused. Your previous saved progress is preserved.'
               : permissionGranted
               ? 'Active · Reading estimated foreground time via Android UsageStats'
-              : 'Waiting for Android Usage Access permission'
+              : 'ROT needs Usage Access to estimate your Instagram screen time.'
           }
           checked={consentStatus === 'accepted' && trackingEnabled}
           onChange={() => {
@@ -168,10 +263,10 @@ export default function SettingsScreen({
               <Icon name="external-link" size={13} color={COLORS.white} />
               <Text style={styles.actionBtnPrimaryText}>
                 {consentStatus !== 'accepted'
-                  ? 'Review & Enable Tracking'
+                  ? 'Grant permission'
                   : permissionGranted
                   ? 'System Usage Access Settings'
-                  : 'Grant Usage Access in Android'}
+                  : 'Grant permission'}
               </Text>
             </TouchableOpacity>
 
@@ -185,7 +280,7 @@ export default function SettingsScreen({
             </TouchableOpacity>
           </View>
 
-          {trackingActive && usageSummary?.todayForegroundMs !== null && (
+          {trackingActive && usageSummary?.todayForegroundMs !== null ? (
             <Text style={styles.syncMetaText}>
               Today’s verified estimate:{' '}
               {
@@ -193,7 +288,11 @@ export default function SettingsScreen({
                   Math.round((usageSummary?.todayForegroundMs ?? 0) / 60000)
                 ).compact
               }{' '}
-              ({usageSummary?.aggregationSource || 'usage_events'})
+              ({usageSummary?.aggregationSource || 'usage_events'} · status: {usageDisplay.status})
+            </Text>
+          ) : (
+            <Text style={styles.syncMetaText}>
+              Status: {usageDisplay.subtitleText}
             </Text>
           )}
         </View>
@@ -359,6 +458,71 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 20,
     lineHeight: 20,
+  },
+
+  // Profile Card
+  profileCard: {
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.xl,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    gap: 12,
+  },
+  nameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  nameInput: {
+    flex: 1,
+    minWidth: 140,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#dfd3eb',
+    backgroundColor: '#faf6fe',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.ink,
+  },
+  nameClearBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nameSaveBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.purple,
+  },
+  nameSaveBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  nameResetBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#ffe8f2',
+    alignSelf: 'flex-start',
+  },
+  nameResetBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
+  profileHint: {
+    fontSize: 10,
+    color: COLORS.muted,
+    lineHeight: 15,
   },
 
   // Settings List

@@ -105,7 +105,7 @@ android {
     if (org.apache.tools.ant.taskdefs.condition.Os.isFamily(org.apache.tools.ant.taskdefs.condition.Os.FAMILY_WINDOWS)) {
         externalNativeBuild {
             cmake {
-                buildStagingDirectory file("D:/c")
+                buildStagingDirectory file("${rootDir.toPath().root}rot-cxx")
             }
         }
     }

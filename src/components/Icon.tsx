@@ -33,6 +33,8 @@ const iconMap: Record<string, string> = {
   'sliders': 'sliders',
   'external-link': 'external-link',
   'alert-circle': 'alert-circle',
+  'edit': 'edit-2',
+  'user': 'user',
 };
 
 type Props = {

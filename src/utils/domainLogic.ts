@@ -8,12 +8,106 @@ import {
   Mission,
   PersistedAppState,
   UsageDataStatus,
+  UsageQueryResult,
+  UserProfile,
 } from '../constants/types';
 
 export const DEFAULT_BASE_XP = 284;
 export const DEFAULT_DAILY_LIMIT_MINUTES = 120;
 export const FOCUS_BREAK_XP_REWARD = 30;
 export const DAILY_CHEST_XP_REWARD = 50;
+export const MAX_DISPLAY_NAME_LENGTH = 28;
+export const DEFAULT_FALLBACK_DISPLAY_NAME = 'ROT User';
+export const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+export function sanitizeDisplayName(
+  input: string | null | undefined,
+  maxLength: number = MAX_DISPLAY_NAME_LENGTH
+): string | null {
+  if (typeof input !== 'string') return null;
+  const collapsed = input.replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return null;
+  return collapsed.slice(0, maxLength).trim();
+}
+
+export function resolveEffectiveDisplayName(profile?: UserProfile | null): {
+  displayName: string;
+  source: 'custom' | 'device' | 'fallback';
+  initials: string;
+  handle: string;
+} {
+  const custom = sanitizeDisplayName(profile?.customDisplayName);
+  if (custom) {
+    return {
+      displayName: custom,
+      source: 'custom',
+      initials: custom.charAt(0).toUpperCase(),
+      handle: `${custom.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '') || 'rot'}.resets`,
+    };
+  }
+
+  const device = sanitizeDisplayName(profile?.deviceDefaultName);
+  if (device && device.toLowerCase() !== 'unknown') {
+    return {
+      displayName: device,
+      source: 'device',
+      initials: device.charAt(0).toUpperCase(),
+      handle: `${device.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '') || 'device'}.resets`,
+    };
+  }
+
+  return {
+    displayName: DEFAULT_FALLBACK_DISPLAY_NAME,
+    source: 'fallback',
+    initials: 'R',
+    handle: 'rot.user',
+  };
+}
+
+export function updateCustomDisplayNameState(
+  state: PersistedAppState,
+  rawName: string | null | undefined
+): {
+  nextState: PersistedAppState;
+  resolvedName: string;
+  revertedToDefault: boolean;
+} {
+  const sanitized = sanitizeDisplayName(rawName);
+  const nextProfile: UserProfile = {
+    ...state.profile,
+    customDisplayName: sanitized,
+  };
+  const nextState: PersistedAppState = {
+    ...state,
+    profile: nextProfile,
+  };
+  const resolved = resolveEffectiveDisplayName(nextProfile);
+  return {
+    nextState,
+    resolvedName: resolved.displayName,
+    revertedToDefault: sanitized === null,
+  };
+}
+
+export function updateDeviceDefaultNameState(
+  state: PersistedAppState,
+  rawDeviceName: string | null | undefined
+): PersistedAppState {
+  const sanitized = sanitizeDisplayName(rawDeviceName);
+  if (!sanitized || sanitized.toLowerCase() === 'unknown') {
+    return state;
+  }
+  if (state.profile.deviceDefaultName === sanitized) {
+    return state;
+  }
+  return {
+    ...state,
+    profile: {
+      ...state.profile,
+      deviceDefaultName: sanitized,
+    },
+  };
+}
 
 export function getLocalDateKey(date: Date = new Date()): string {
   const year = date.getFullYear();
@@ -78,7 +172,10 @@ export function formatMinutesAsHoursAndMinutes(totalMinutes: number): {
   return { hours, minutes, compact };
 }
 
-export function formatFreshnessLabel(queriedAtMs: number | null | undefined, nowMs: number = Date.now()): string {
+export function formatFreshnessLabel(
+  queriedAtMs: number | null | undefined,
+  nowMs: number = Date.now()
+): string {
   if (!queriedAtMs || queriedAtMs <= 0) {
     return 'Not synced yet';
   }
@@ -90,9 +187,44 @@ export function formatFreshnessLabel(queriedAtMs: number | null | undefined, now
   return `Updated ${diffHours}h ago`;
 }
 
+export function isSuccessfulUsageSummary(
+  summary: InstagramUsageSummary | null | undefined
+): boolean {
+  if (!summary || !summary.permissionGranted) return false;
+  return (
+    (summary.status === 'ok' ||
+      summary.status === 'zero_usage' ||
+      summary.status === 'incomplete') &&
+    typeof summary.todayForegroundMs === 'number' &&
+    summary.todayForegroundMs >= 0
+  );
+}
+
+/**
+ * Keeps the last successful estimate separate from the latest query result.
+ * A failed, denied, or paused query never overwrites valid historical cached data with zero or erases it.
+ */
+export function selectCachedSummaryToPersist(
+  previousCached: InstagramUsageSummary | null,
+  latestSummary: InstagramUsageSummary,
+  consentStatus: ConsentStatus,
+  trackingEnabled: boolean
+): InstagramUsageSummary | null {
+  if (consentStatus !== 'accepted' || !trackingEnabled) {
+    return previousCached;
+  }
+  if (isSuccessfulUsageSummary(latestSummary)) {
+    return latestSummary;
+  }
+  return previousCached;
+}
+
 export type UsageDisplayState = {
+  queryResult: UsageQueryResult;
   status: UsageDataStatus;
   hasVerifiedEstimate: boolean;
+  isShowingCachedFallback: boolean;
+  staleOrIncompleteWarning: string | null;
   hours: number | null;
   minutes: number | null;
   headlineText: string | null;
@@ -104,104 +236,273 @@ export type UsageDisplayState = {
 };
 
 /**
- * Maps raw UsageStats + user consent/settings into an honest display model.
- * Strictly obeys SRS rules:
- * - Never presents missing/denied/unavailable usage data as 0m (BT-04, AT-03).
+ * Maps raw UsageStats + cached estimate + user consent/settings into a typed structured UsageDisplayState.
+ * Strictly obeys SRS & Part C rules:
+ * - Never presents missing, denied, paused, or failed usage data as 0h 00m (BT-04, AT-03).
+ * - Distinguishes permission_required, tracking_paused, not_installed, no_os_record, query_failed, stale, incomplete, zero_usage, and ok.
  * - Explicitly labels verified usage as estimated Instagram foreground time, never exact Reel counts (BT-02, BT-03, AT-11).
  */
 export function buildUsageDisplayState(
   summary: InstagramUsageSummary | null,
   consentStatus: ConsentStatus,
   trackingEnabled: boolean,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  cachedSummary: InstagramUsageSummary | null = null
 ): UsageDisplayState {
+  const validCached =
+    cachedSummary &&
+    typeof cachedSummary.todayForegroundMs === 'number' &&
+    cachedSummary.todayForegroundMs >= 0 &&
+    getLocalDateKey(new Date(cachedSummary.queriedAtMs)) === getLocalDateKey(new Date(nowMs))
+      ? cachedSummary
+      : null;
+
+  // 1. Consent not yet accepted
   if (consentStatus !== 'accepted') {
+    const queryResult: UsageQueryResult = {
+      status: 'permission_required',
+      estimatedMinutes: null,
+      lastUpdatedAt: validCached?.queriedAtMs ?? null,
+      source: 'none',
+      isComplete: false,
+      errorCode: 'CONSENT_REQUIRED',
+    };
     return {
-      status: 'tracking_disabled',
+      queryResult,
+      status: 'permission_required',
       hasVerifiedEstimate: false,
+      isShowingCachedFallback: false,
+      staleOrIncompleteWarning: null,
       hours: null,
       minutes: null,
-      headlineText: 'Setup needed',
-      subtitleText:
-        'Review how ROT estimates Instagram foreground time to enable usage tracking.',
-      freshnessText: 'Consent required',
+      headlineText: 'Access needed',
+      subtitleText: 'ROT needs Usage Access to estimate your Instagram screen time.',
+      freshnessText: 'Permission required',
       badgeDotColor: '#ffd640',
-      actionLabel: 'Review & Enable Tracking',
+      actionLabel: 'Grant permission',
       actionKind: 'consent',
     };
   }
 
+  // 2. Tracking paused by user
   if (!trackingEnabled) {
+    const queryResult: UsageQueryResult = {
+      status: 'tracking_paused',
+      estimatedMinutes: null,
+      lastUpdatedAt: validCached?.queriedAtMs ?? null,
+      source: validCached?.aggregationSource ?? 'paused',
+      isComplete: false,
+    };
     return {
-      status: 'tracking_disabled',
+      queryResult,
+      status: 'tracking_paused',
       hasVerifiedEstimate: false,
+      isShowingCachedFallback: false,
+      staleOrIncompleteWarning: validCached
+        ? `Previous saved estimate (${
+            formatMinutesAsHoursAndMinutes(Math.round((validCached.todayForegroundMs ?? 0) / 60000)).compact
+          } at ${formatFreshnessLabel(validCached.queriedAtMs, nowMs).toLowerCase()}) is preserved.`
+        : null,
       hours: null,
       minutes: null,
       headlineText: 'Tracking paused',
-      subtitleText:
-        'Usage tracking is turned off in Settings. Your dashboard will not record or show 0m while paused.',
+      subtitleText: 'Tracking is paused. Your previous saved progress is preserved.',
       freshnessText: 'Paused by you',
       badgeDotColor: '#ffd640',
-      actionLabel: 'Resume Tracking',
+      actionLabel: 'Resume tracking',
       actionKind: 'enable_tracking',
     };
   }
 
+  // 3. Permission missing or revoked while running
   if (!summary || summary.status === 'permission_required' || !summary.permissionGranted) {
+    const queryResult: UsageQueryResult = {
+      status: 'permission_required',
+      estimatedMinutes: null,
+      lastUpdatedAt: validCached?.queriedAtMs ?? null,
+      source: 'permission_check',
+      isComplete: false,
+      errorCode: summary?.errorCode ?? 'PERMISSION_DENIED',
+    };
     return {
+      queryResult,
       status: 'permission_required',
       hasVerifiedEstimate: false,
+      isShowingCachedFallback: false,
+      staleOrIncompleteWarning: validCached
+        ? `Usage Access was revoked. Last saved estimate (${
+            formatMinutesAsHoursAndMinutes(Math.round((validCached.todayForegroundMs ?? 0) / 60000)).compact
+          }, ${formatFreshnessLabel(validCached.queriedAtMs, nowMs).toLowerCase()}) is preserved.`
+        : null,
       hours: null,
       minutes: null,
       headlineText: 'Access needed',
-      subtitleText:
-        'Android Usage Access is off. Grant access in system settings to estimate Instagram foreground time.',
+      subtitleText: 'ROT needs Usage Access to estimate your Instagram screen time.',
       freshnessText: 'Permission needed',
       badgeDotColor: '#ffd640',
-      actionLabel: 'Grant Usage Access',
+      actionLabel: 'Grant permission',
       actionKind: 'permission',
     };
   }
 
-  if (summary.status === 'not_installed') {
+  // 4. Instagram not installed
+  if (summary.status === 'not_installed' || (!summary.instagramInstalled && !summary.todayForegroundMs)) {
+    const queryResult: UsageQueryResult = {
+      status: 'not_installed',
+      estimatedMinutes: null,
+      lastUpdatedAt: summary.queriedAtMs,
+      source: summary.aggregationSource ?? 'package_manager',
+      isComplete: false,
+    };
     return {
+      queryResult,
       status: 'not_installed',
       hasVerifiedEstimate: false,
+      isShowingCachedFallback: false,
+      staleOrIncompleteWarning: null,
       hours: null,
       minutes: null,
-      headlineText: 'No IG app',
-      subtitleText:
-        'Instagram (com.instagram.android) is not installed on this device, so no usage estimate is shown.',
+      headlineText: 'Not installed',
+      subtitleText: "Instagram isn't installed on this device.",
       freshnessText: formatFreshnessLabel(summary.queriedAtMs, nowMs),
       badgeDotColor: '#f47b33',
-      actionLabel: 'Refresh check',
-      actionKind: 'refresh',
+      actionLabel: null,
+      actionKind: null,
     };
   }
 
-  if (summary.status === 'unavailable' || summary.todayForegroundMs === null) {
+  // 5. Query failed or timed out
+  if (summary.status === 'query_failed') {
+    const cachedMins =
+      validCached && validCached.todayForegroundMs !== null
+        ? Math.max(0, Math.round(validCached.todayForegroundMs / 60000))
+        : null;
+    const cachedFormatted =
+      cachedMins !== null ? formatMinutesAsHoursAndMinutes(cachedMins) : null;
+
+    const queryResult: UsageQueryResult = {
+      status: 'query_failed',
+      estimatedMinutes: cachedMins,
+      lastUpdatedAt: validCached?.queriedAtMs ?? null,
+      source: validCached?.aggregationSource ?? 'error',
+      isComplete: false,
+      errorCode: summary.errorCode ?? 'USAGE_QUERY_ERROR',
+    };
     return {
-      status: 'unavailable',
+      queryResult,
+      status: 'query_failed',
       hasVerifiedEstimate: false,
-      hours: null,
-      minutes: null,
-      headlineText: 'Unavailable',
+      isShowingCachedFallback: cachedFormatted !== null,
+      staleOrIncompleteWarning:
+        cachedFormatted && validCached
+          ? `Showing last saved estimate (${cachedFormatted.compact}, ${formatFreshnessLabel(
+              validCached.queriedAtMs,
+              nowMs
+            ).toLowerCase()}) — not current verified data.`
+          : null,
+      hours: cachedFormatted ? cachedFormatted.hours : null,
+      minutes: cachedFormatted ? cachedFormatted.minutes : null,
+      headlineText: 'Sync failed',
       subtitleText:
-        summary.statusReason ||
-        'Android UsageStats returned no usage records for this window. Missing data is never shown as 0m.',
-      freshnessText: formatFreshnessLabel(summary.queriedAtMs, nowMs),
+        "We couldn't retrieve your usage data. Your previous saved data hasn't been deleted.",
+      freshnessText: validCached
+        ? `Saved · ${formatFreshnessLabel(validCached.queriedAtMs, nowMs)}`
+        : 'Query failed',
       badgeDotColor: '#f47b33',
-      actionLabel: 'Retry sync',
+      actionLabel: 'Try again',
       actionKind: 'refresh',
     };
   }
 
+  // 6. No OS usage record
+  if (
+    summary.status === 'no_os_record' ||
+    summary.status === 'unavailable' ||
+    summary.todayForegroundMs === null
+  ) {
+    const queryResult: UsageQueryResult = {
+      status: 'no_os_record',
+      estimatedMinutes: null,
+      lastUpdatedAt: summary.queriedAtMs,
+      source: summary.aggregationSource ?? 'no_os_records',
+      isComplete: false,
+    };
+    return {
+      queryResult,
+      status: 'no_os_record',
+      hasVerifiedEstimate: false,
+      isShowingCachedFallback: false,
+      staleOrIncompleteWarning: null,
+      hours: null,
+      minutes: null,
+      headlineText: 'No OS record',
+      subtitleText: 'No usage record is available yet. Open Instagram and check again.',
+      freshnessText: formatFreshnessLabel(summary.queriedAtMs, nowMs),
+      badgeDotColor: '#f47b33',
+      actionLabel: 'Refresh',
+      actionKind: 'refresh',
+    };
+  }
+
+  // 7. Valid numeric reading from OS (0 or >0, fresh, stale, or incomplete)
   const usedMinutes = Math.max(0, Math.round(summary.todayForegroundMs / 60000));
   const { hours, minutes } = formatMinutesAsHoursAndMinutes(usedMinutes);
+  const ageMs = Math.max(0, nowMs - summary.queriedAtMs);
+  const isStale = summary.status === 'stale' || ageMs > STALE_THRESHOLD_MS;
+  const isIncomplete =
+    summary.status === 'incomplete' || summary.isComplete === false;
+  const isZero = summary.status === 'zero_usage' || usedMinutes === 0;
+
+  let resolvedStatus: UsageDataStatus = 'ok';
+  if (isStale) {
+    resolvedStatus = 'stale';
+  } else if (isIncomplete) {
+    resolvedStatus = 'incomplete';
+  } else if (isZero) {
+    resolvedStatus = 'zero_usage';
+  }
+
+  const queryResult: UsageQueryResult = {
+    status: resolvedStatus,
+    estimatedMinutes: usedMinutes,
+    lastUpdatedAt: summary.queriedAtMs,
+    source: summary.aggregationSource ?? 'usage_events',
+    isComplete: isIncomplete ? false : summary.isComplete ?? true,
+  };
+
+  if (isStale || isIncomplete) {
+    const warningReason = isStale
+      ? `Stale estimate (${formatFreshnessLabel(
+          summary.queriedAtMs,
+          nowMs
+        ).toLowerCase()}). Refresh to verify current usage.`
+      : 'Incomplete OS interval log — estimated from daily aggregate bucket.';
+    return {
+      queryResult,
+      status: resolvedStatus,
+      hasVerifiedEstimate: false,
+      isShowingCachedFallback: true,
+      staleOrIncompleteWarning: warningReason,
+      hours,
+      minutes,
+      headlineText: null,
+      subtitleText: 'estimated Instagram foreground time (unverified / needs refresh)',
+      freshnessText: `${isStale ? 'Stale' : 'Incomplete'} · ${formatFreshnessLabel(
+        summary.queriedAtMs,
+        nowMs
+      )}`,
+      badgeDotColor: '#ffd640',
+      actionLabel: 'Refresh',
+      actionKind: 'refresh',
+    };
+  }
 
   return {
-    status: 'ok',
+    queryResult,
+    status: resolvedStatus,
     hasVerifiedEstimate: true,
+    isShowingCachedFallback: false,
+    staleOrIncompleteWarning: null,
     hours,
     minutes,
     headlineText: null,
@@ -361,7 +662,10 @@ export function calculateBrainrotIndex(
   };
 }
 
-export function createInitialPersistedState(dateKey: string = getLocalDateKey()): PersistedAppState {
+export function createInitialPersistedState(
+  dateKey: string = getLocalDateKey(),
+  deviceDefaultName: string | null = null
+): PersistedAppState {
   const defaultMissionsMap: Record<string, boolean> = {};
   for (const m of initialMissions) {
     defaultMissionsMap[m.id] = m.done;
@@ -376,11 +680,15 @@ export function createInitialPersistedState(dateKey: string = getLocalDateKey())
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     consentStatus: 'pending',
     consentUpdatedAt: null,
     trackingEnabled: true,
     dailyLimitMinutes: DEFAULT_DAILY_LIMIT_MINUTES,
+    profile: {
+      customDisplayName: null,
+      deviceDefaultName: sanitizeDisplayName(deviceDefaultName),
+    },
     settings: {
       dailyGentleNudge: true,
       privateMode: true,
@@ -472,7 +780,7 @@ function syncUnlockedBadges(
   for (let i = 0; i < candidateBadges.length; i++) {
     const badge = candidateBadges[i];
     const wasUnlocked = prevBadges[i]?.unlocked ?? false;
-    if (badge.unlocked && ! nextUnlockedMap[badge.id]) {
+    if (badge.unlocked && !nextUnlockedMap[badge.id]) {
       nextUnlockedMap[badge.id] = dateKey;
     }
     if (badge.unlocked && !wasUnlocked && !newlyUnlockedBadge) {
@@ -507,7 +815,6 @@ export function toggleMissionState(
 
   const nextDone = forceComplete ? true : !target.done;
   if (forceComplete && target.done) {
-    // Already completed today: strictly idempotent no-op
     return {
       nextState: state,
       xpAwarded: 0,
@@ -648,7 +955,7 @@ export function claimDailyChestState(
  * - Increments completedFocusBreaks
  * - Awards +30 XP (idempotent per sessionId)
  * - Automatically marks "Touch some grass" mission complete if not already done today
- * - Unlocks Offline Icon badge
+ * - Unlocks Offline Icon badge (FR-009)
  */
 export function completeFocusBreakState(
   state: PersistedAppState,
@@ -727,19 +1034,20 @@ export function completeFocusBreakState(
 
 /**
  * Deletes local usage cache and activity history (FR-014, UC-04, AT-08) while preserving
- * the user's current consent/privacy settings.
+ * the user's current consent/privacy settings and display name profile.
  */
 export function clearLocalHistoryState(
   state: PersistedAppState,
   dateKey: string = getLocalDateKey()
 ): PersistedAppState {
-  const clean = createInitialPersistedState(dateKey);
+  const clean = createInitialPersistedState(dateKey, state.profile.deviceDefaultName);
   return {
     ...clean,
     consentStatus: state.consentStatus,
     consentUpdatedAt: state.consentUpdatedAt,
     trackingEnabled: state.trackingEnabled,
     dailyLimitMinutes: state.dailyLimitMinutes,
+    profile: { ...state.profile },
     settings: { ...state.settings },
     baseXp: DEFAULT_BASE_XP,
     claimedXpEvents: {},

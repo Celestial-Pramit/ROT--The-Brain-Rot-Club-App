@@ -38,11 +38,16 @@ import {
   getEffectiveDailyLimitMinutes,
   getLocalDateKey,
   getMissionsForDate,
+  resolveEffectiveDisplayName,
+  selectCachedSummaryToPersist,
   toggleMissionState,
+  updateCustomDisplayNameState,
+  updateDeviceDefaultNameState,
 } from './src/utils/domainLogic';
 import { loadPersistedState, savePersistedState } from './src/utils/storage';
 import {
   openAndroidUsageAccessSettings,
+  queryDeviceProfileInfo,
   queryInstagramUsageSummary,
 } from './src/utils/usageStats';
 import TodayScreen from './src/screens/TodayScreen';
@@ -87,6 +92,7 @@ export default function App() {
 
   const appStateRef = useRef(appState);
   appStateRef.current = appState;
+  const lastAutoRefreshAtRef = useRef(0);
 
   const updateAndPersist = useCallback(
     (updater: (prev: PersistedAppState) => PersistedAppState) => {
@@ -101,19 +107,31 @@ export default function App() {
 
   const syncUsageStats = useCallback(
     async (showFeedbackToast = false) => {
+      lastAutoRefreshAtRef.current = Date.now();
       const summary = await queryInstagramUsageSummary(7);
       setUsageSummary(summary);
-      updateAndPersist((prev) => ({
-        ...prev,
-        cachedUsageSummary:
-          prev.consentStatus === 'accepted' && prev.trackingEnabled
-            ? summary
-            : prev.cachedUsageSummary,
-      }));
+      updateAndPersist((prev) => {
+        let next = prev;
+        if (summary.deviceName) {
+          next = updateDeviceDefaultNameState(next, summary.deviceName);
+        }
+        return {
+          ...next,
+          cachedUsageSummary: selectCachedSummaryToPersist(
+            next.cachedUsageSummary,
+            summary,
+            next.consentStatus,
+            next.trackingEnabled
+          ),
+        };
+      });
       if (showFeedbackToast) {
         if (!summary.permissionGranted) {
-          setToast('Usage Access permission is not granted yet.');
-        } else if (summary.status === 'ok' && summary.todayForegroundMs !== null) {
+          setToast('ROT needs Usage Access to estimate your Instagram screen time.');
+        } else if (
+          (summary.status === 'ok' || summary.status === 'zero_usage') &&
+          summary.todayForegroundMs !== null
+        ) {
           const mins = Math.round(summary.todayForegroundMs / 60000);
           setToast(
             `Synced: ${formatMinutesAsHoursAndMinutes(mins).compact} estimated Instagram foreground time today.`
@@ -126,31 +144,56 @@ export default function App() {
     [updateAndPersist]
   );
 
-  // Hydrate persisted state and query initial UsageStats
+  // Hydrate persisted state, query device profile name, and query initial UsageStats
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const loaded = await loadPersistedState();
+      const [loaded, deviceInfo] = await Promise.all([
+        loadPersistedState(),
+        queryDeviceProfileInfo(),
+      ]);
       if (!mounted) return;
-      setAppState(loaded);
-      if (loaded.cachedUsageSummary) {
-        setUsageSummary(loaded.cachedUsageSummary);
+      const hydratedState = updateDeviceDefaultNameState(
+        loaded,
+        deviceInfo.deviceName
+      );
+      setAppState(hydratedState);
+      if (hydratedState !== loaded) {
+        void savePersistedState(hydratedState);
+      }
+      if (hydratedState.cachedUsageSummary) {
+        setUsageSummary(hydratedState.cachedUsageSummary);
       }
       setHydrated(true);
 
+      lastAutoRefreshAtRef.current = Date.now();
       const liveSummary = await queryInstagramUsageSummary(7);
       if (!mounted) return;
       setUsageSummary(liveSummary);
+      updateAndPersist((prev) => {
+        const withDevice = liveSummary.deviceName
+          ? updateDeviceDefaultNameState(prev, liveSummary.deviceName)
+          : prev;
+        return {
+          ...withDevice,
+          cachedUsageSummary: selectCachedSummaryToPersist(
+            withDevice.cachedUsageSummary,
+            liveSummary,
+            withDevice.consentStatus,
+            withDevice.trackingEnabled
+          ),
+        };
+      });
 
       // Prompt consent modal on initial launch if still pending
-      if (loaded.consentStatus === 'pending') {
+      if (hydratedState.consentStatus === 'pending') {
         setPermissionModalOpen(true);
       }
     })();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [updateAndPersist]);
 
   // Re-query UsageStats automatically when returning from Android system Usage Access settings
   useEffect(() => {
@@ -158,7 +201,10 @@ export default function App() {
       'change',
       (nextStatus: AppStateStatus) => {
         if (nextStatus === 'active' && hydrated) {
-          void syncUsageStats(false);
+          const now = Date.now();
+          if (now - lastAutoRefreshAtRef.current >= 2500) {
+            void syncUsageStats(false);
+          }
         }
       }
     );
@@ -214,6 +260,8 @@ export default function App() {
     appState.unlockedBadges
   );
 
+  const identity = resolveEffectiveDisplayName(appState.profile);
+
   const effectiveLimitMinutes = getEffectiveDailyLimitMinutes(
     appState.dailyLimitMinutes,
     appState.settings.weekendBreathingRoom
@@ -222,7 +270,9 @@ export default function App() {
   const usageDisplay = buildUsageDisplayState(
     usageSummary,
     appState.consentStatus,
-    appState.trackingEnabled
+    appState.trackingEnabled,
+    Date.now(),
+    appState.cachedUsageSummary
   );
 
   const limitProgress = calculateLimitProgress(
@@ -238,6 +288,16 @@ export default function App() {
     completedMissions,
     appState.completedFocusBreaks
   );
+
+  function handleSaveDisplayName(rawName: string | null) {
+    const res = updateCustomDisplayNameState(appStateRef.current, rawName);
+    updateAndPersist(() => res.nextState);
+    if (res.revertedToDefault) {
+      setToast(`Display name reset to ${res.resolvedName}.`);
+    } else {
+      setToast(`Display name saved as ${res.resolvedName}.`);
+    }
+  }
 
   function handleToggleMission(index: number) {
     const result = toggleMissionState(appStateRef.current, index, dateKey);
@@ -355,7 +415,6 @@ export default function App() {
   function handleChangeDailyLimit(minutes: number) {
     const clamped = clampDailyLimitMinutes(minutes);
     updateAndPersist((prev) => {
-      // Also complete "Set a scroll limit" mission if not yet done today
       const currentMissions = getMissionsForDate(prev, dateKey);
       const limitIdx = currentMissions.findIndex(
         (m) => m.id === 'set-scroll-limit'
@@ -399,6 +458,10 @@ export default function App() {
       case 'Today':
         return (
           <TodayScreen
+            displayName={identity.displayName}
+            customDisplayName={appState.profile.customDisplayName}
+            deviceDefaultName={appState.profile.deviceDefaultName}
+            onSaveDisplayName={handleSaveDisplayName}
             completedMissions={completedMissions}
             earnedXp={earnedTodayXp}
             missions={missions}
@@ -436,6 +499,9 @@ export default function App() {
       case 'Leaderboard':
         return (
           <LeaderboardScreen
+            displayName={identity.displayName}
+            userHandle={identity.handle}
+            userInitials={identity.initials}
             totalXp={totalXp}
             earnedTodayXp={earnedTodayXp}
             onToast={setToast}
@@ -444,21 +510,28 @@ export default function App() {
       case 'Card':
         return (
           <BrainrotCardScreen
+            displayName={identity.displayName}
             totalXp={totalXp}
             archetypeTitle={brainrotIndex.archetypeTitle}
             archetypeDesc={brainrotIndex.archetypeDesc}
             privateMode={appState.settings.privateMode}
+            onEditName={() => setActiveView('Settings')}
             onToast={setToast}
           />
         );
       case 'Settings':
         return (
           <SettingsScreen
+            displayName={identity.displayName}
+            customDisplayName={appState.profile.customDisplayName}
+            deviceDefaultName={appState.profile.deviceDefaultName}
+            onSaveDisplayName={handleSaveDisplayName}
             consentStatus={appState.consentStatus}
             trackingEnabled={appState.trackingEnabled}
             dailyLimitMinutes={appState.dailyLimitMinutes}
             settings={appState.settings}
             usageSummary={usageSummary}
+            usageDisplay={usageDisplay}
             onToggleTracking={(nextEnabled) => {
               updateAndPersist((prev) => ({
                 ...prev,
@@ -467,7 +540,7 @@ export default function App() {
               setToast(
                 nextEnabled
                   ? 'Instagram usage tracking resumed.'
-                  : 'Instagram usage tracking paused.'
+                  : 'Tracking is paused. Your previous saved progress is preserved.'
               );
               if (nextEnabled) {
                 void syncUsageStats(false);
@@ -493,7 +566,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <StatusBar barStyle="dark-content" />
 
       {/* Top Bar */}

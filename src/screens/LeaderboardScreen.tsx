@@ -6,12 +6,18 @@ import { rankings } from '../constants/data';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
+  userHandle: string;
+  userInitials: string;
   totalXp: number;
   earnedTodayXp: number;
   onToast: (message: string) => void;
 };
 
 export default function LeaderboardScreen({
+  displayName,
+  userHandle,
+  userInitials,
   totalXp,
   earnedTodayXp,
   onToast,
@@ -20,7 +26,14 @@ export default function LeaderboardScreen({
   const rows = rankings[tab]
     .map((r) =>
       r.current
-        ? { ...r, xp: totalXp, change: `+${earnedTodayXp} XP` }
+        ? {
+            ...r,
+            name: displayName,
+            handle: tab === 'Campus' ? r.handle : userHandle,
+            initials: userInitials,
+            xp: totalXp,
+            change: `+${earnedTodayXp} XP`,
+          }
         : r
     )
     .sort((a, b) => b.xp - a.xp);

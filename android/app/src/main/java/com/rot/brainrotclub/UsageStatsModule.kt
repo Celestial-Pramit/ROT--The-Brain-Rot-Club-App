@@ -136,6 +136,63 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun resolveBestDeviceName(context: Context): String {
+        val candidates = mutableListOf<String?>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+            try {
+                candidates.add(
+                    Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+                )
+            } catch (_: Exception) {
+            }
+        }
+        try {
+            candidates.add(
+                Settings.Secure.getString(context.contentResolver, "bluetooth_name")
+            )
+        } catch (_: Exception) {
+        }
+        val model = Build.MODEL?.trim().orEmpty()
+        val manufacturer = Build.MANUFACTURER?.trim().orEmpty()
+        if (model.isNotEmpty()) {
+            if (manufacturer.isNotEmpty() && !model.startsWith(manufacturer, ignoreCase = true)) {
+                candidates.add("$manufacturer $model")
+            } else {
+                candidates.add(model)
+            }
+        }
+        for (raw in candidates) {
+            val cleaned = raw?.trim().orEmpty()
+            if (cleaned.isNotEmpty() && !cleaned.equals("unknown", ignoreCase = true)) {
+                return cleaned
+            }
+        }
+        return "ROT User"
+    }
+
+    @ReactMethod
+    fun getDeviceProfileInfo(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val deviceName = resolveBestDeviceName(context)
+            val map = Arguments.createMap().apply {
+                putString("deviceName", deviceName)
+                putString("manufacturer", Build.MANUFACTURER ?: "unknown")
+                putString("model", Build.MODEL ?: "unknown")
+                putInt("sdkInt", Build.VERSION.SDK_INT)
+            }
+            promise.resolve(map)
+        } catch (_: Exception) {
+            val map = Arguments.createMap().apply {
+                putString("deviceName", "ROT User")
+                putString("manufacturer", Build.MANUFACTURER ?: "unknown")
+                putString("model", Build.MODEL ?: "unknown")
+                putInt("sdkInt", Build.VERSION.SDK_INT)
+            }
+            promise.resolve(map)
+        }
+    }
+
     @ReactMethod
     fun getInstagramUsageSummary(daysBack: Int, promise: Promise) {
         try {
@@ -143,11 +200,13 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             val now = System.currentTimeMillis()
             val hasPermission = checkUsageAccessGranted(context)
             val instagramInstalled = checkPackageInstalled(context, INSTAGRAM_PACKAGE)
+            val deviceName = resolveBestDeviceName(context)
 
             val result = Arguments.createMap().apply {
                 putBoolean("permissionGranted", hasPermission)
                 putBoolean("instagramInstalled", instagramInstalled)
                 putDouble("queriedAtMs", now.toDouble())
+                putString("deviceName", deviceName)
                 putString("manufacturer", Build.MANUFACTURER ?: "unknown")
                 putString("model", Build.MODEL ?: "unknown")
                 putInt("sdkInt", Build.VERSION.SDK_INT)
@@ -157,8 +216,10 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 result.putString("status", "permission_required")
                 result.putString(
                     "statusReason",
-                    "Android Usage Access is not granted. Enable Usage Access to read foreground time estimates."
+                    "ROT needs Usage Access to estimate your Instagram screen time."
                 )
+                result.putBoolean("isComplete", false)
+                result.putString("errorCode", "PERMISSION_DENIED")
                 result.putNull("todayForegroundMs")
                 result.putArray("dailyBreakdown", Arguments.createArray())
                 promise.resolve(result)
@@ -168,8 +229,13 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             val usageStatsManager =
                 context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
             if (usageStatsManager == null) {
-                result.putString("status", "unavailable")
-                result.putString("statusReason", "UsageStatsManager service is unavailable on this device.")
+                result.putString("status", "query_failed")
+                result.putString(
+                    "statusReason",
+                    "We couldn't retrieve your usage data. Your previous saved data hasn't been deleted."
+                )
+                result.putBoolean("isComplete", false)
+                result.putString("errorCode", "SERVICE_UNAVAILABLE")
                 result.putNull("todayForegroundMs")
                 result.putArray("dailyBreakdown", Arguments.createArray())
                 promise.resolve(result)
@@ -326,6 +392,7 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 todayWindow.anyDeviceEvents -> "usage_events_zero"
                 else -> "no_os_records"
             }
+            val todayComplete = todayWindow.eventDurationMs > 0L || todayWindow.anyDeviceEvents
 
             val breakdownArray = Arguments.createArray()
             for (dw in dayWindows) {
@@ -349,29 +416,51 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             result.putDouble("lastOsEventAtMs", lastEventTimestamp.toDouble())
             result.putDouble("todayStartMs", todayStartMs.toDouble())
             result.putString("aggregationSource", todaySource)
+            result.putBoolean("isComplete", todayComplete)
 
             when {
-                !osHasAnyUsageData -> {
-                    result.putString("status", "unavailable")
-                    result.putString(
-                        "statusReason",
-                        "Android UsageStats returned no system usage records for this period. The OS may restrict background usage history."
-                    )
-                    result.putNull("todayForegroundMs")
-                }
                 !instagramInstalled && todayMs == 0L -> {
                     result.putString("status", "not_installed")
                     result.putString(
                         "statusReason",
-                        "Instagram (com.instagram.android) is not installed on this device, and no prior Instagram usage was recorded today."
+                        "Instagram isn't installed on this device."
                     )
+                    result.putBoolean("isComplete", false)
                     result.putNull("todayForegroundMs")
+                }
+                !osHasAnyUsageData || (!todayWindow.anyDeviceEvents && todayMs == 0L) -> {
+                    result.putString("status", "no_os_record")
+                    result.putString(
+                        "statusReason",
+                        "No usage record is available yet. Open Instagram and check again."
+                    )
+                    result.putBoolean("isComplete", false)
+                    result.putNull("todayForegroundMs")
+                }
+                todayMs == 0L -> {
+                    result.putString("status", "zero_usage")
+                    result.putString(
+                        "statusReason",
+                        "estimated Instagram foreground time"
+                    )
+                    result.putDouble("todayForegroundMs", 0.0)
+                    result.putInt("todaySessionCount", 0)
+                }
+                !todayWindow.anyDeviceEvents && todayWindow.statsDurationMs > 0L -> {
+                    result.putString("status", "incomplete")
+                    result.putString(
+                        "statusReason",
+                        "Estimated from daily OS aggregate bucket because granular interval events were incomplete."
+                    )
+                    result.putBoolean("isComplete", false)
+                    result.putDouble("todayForegroundMs", todayMs.toDouble())
+                    result.putInt("todaySessionCount", todayWindow.sessionCount)
                 }
                 else -> {
                     result.putString("status", "ok")
                     result.putString(
                         "statusReason",
-                        "Estimated foreground time calculated from Android UsageStats."
+                        "estimated Instagram foreground time"
                     )
                     result.putDouble("todayForegroundMs", todayMs.toDouble())
                     result.putInt("todaySessionCount", todayWindow.sessionCount)

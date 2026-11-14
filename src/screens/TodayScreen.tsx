@@ -1,5 +1,12 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+} from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { DailyChest, InstagramUsageSummary, Mission } from '../constants/types';
 import {
@@ -8,6 +15,7 @@ import {
   formatReadableDateHeader,
   getGreetingForHour,
   LimitProgressSummary,
+  MAX_DISPLAY_NAME_LENGTH,
   UsageDisplayState,
 } from '../utils/domainLogic';
 import MissionRow from '../components/MissionRow';
@@ -15,6 +23,10 @@ import DailyChestCard from '../components/DailyChestCard';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
+  customDisplayName: string | null;
+  deviceDefaultName: string | null;
+  onSaveDisplayName: (rawName: string | null) => void;
   completedMissions: number;
   earnedXp: number;
   missions: Mission[];
@@ -35,6 +47,10 @@ type Props = {
 };
 
 export default function TodayScreen({
+  displayName,
+  customDisplayName,
+  deviceDefaultName,
+  onSaveDisplayName,
   earnedXp,
   missions,
   onMissionClick,
@@ -52,11 +68,22 @@ export default function TodayScreen({
   onUsageAction,
   onRefreshUsage,
 }: Props) {
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(customDisplayName ?? displayName);
+
+  useEffect(() => {
+    if (!editingName) {
+      setDraftName(customDisplayName ?? displayName);
+    }
+  }, [customDisplayName, displayName, editingName]);
+
   const dateHeader = formatReadableDateHeader();
   const greeting = getGreetingForHour();
 
   const breakdown = usageSummary?.dailyBreakdown ?? [];
-  const hasRealBreakdown = usageDisplay.hasVerifiedEstimate && breakdown.length > 0;
+  const hasRealBreakdown =
+    (usageDisplay.hasVerifiedEstimate || usageDisplay.isShowingCachedFallback) &&
+    breakdown.length > 0;
   const maxChartMinutes = Math.max(120, effectiveLimitMinutes);
   const topAxisLabel = formatMinutesAsHoursAndMinutes(maxChartMinutes).compact;
   const midAxisLabel = formatMinutesAsHoursAndMinutes(Math.round(maxChartMinutes / 2)).compact;
@@ -86,6 +113,11 @@ export default function TodayScreen({
         minutes: null,
       }));
 
+  const showNumericEstimate =
+    (usageDisplay.hasVerifiedEstimate || usageDisplay.isShowingCachedFallback) &&
+    usageDisplay.hours !== null &&
+    usageDisplay.minutes !== null;
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -95,9 +127,84 @@ export default function TodayScreen({
       {/* Welcome */}
       <View style={styles.welcomeRow}>
         <Text style={styles.eyebrow}>{dateHeader}</Text>
-        <Text style={styles.heading}>
-          {greeting}, Rafi<Text style={styles.dot}>.</Text>
-        </Text>
+        <View style={styles.greetingRow}>
+          <Text style={styles.heading}>
+            {greeting}, {displayName}
+            <Text style={styles.dot}>.</Text>
+          </Text>
+          <TouchableOpacity
+            style={styles.editNameChip}
+            onPress={() => {
+              setDraftName(customDisplayName ?? displayName);
+              setEditingName((prev) => !prev);
+            }}
+            activeOpacity={0.75}
+            accessibilityLabel="Edit display name"
+          >
+            <Icon name="edit" size={12} color={COLORS.purple} />
+            <Text style={styles.editNameChipText}>
+              {editingName ? 'Close' : 'Edit'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {editingName && (
+          <View style={styles.nameEditorCard}>
+            <Text style={styles.nameEditorTitle}>Display name</Text>
+            <Text style={styles.nameEditorHint}>
+              Saved on this device only (max {MAX_DISPLAY_NAME_LENGTH} characters). Leave blank or reset to use device name ({deviceDefaultName || 'ROT User'}).
+            </Text>
+            <View style={styles.nameInputRow}>
+              <TextInput
+                style={styles.nameInput}
+                value={draftName}
+                onChangeText={setDraftName}
+                maxLength={MAX_DISPLAY_NAME_LENGTH}
+                placeholder={deviceDefaultName || 'ROT User'}
+                placeholderTextColor="#a395b2"
+                autoCapitalize="words"
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  onSaveDisplayName(draftName);
+                  setEditingName(false);
+                }}
+              />
+              {draftName.length > 0 && (
+                <TouchableOpacity
+                  style={styles.nameClearBtn}
+                  onPress={() => setDraftName('')}
+                  activeOpacity={0.75}
+                  accessibilityLabel="Clear display name input"
+                >
+                  <Icon name="x" size={13} color={COLORS.muted} />
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.nameSaveBtn}
+                onPress={() => {
+                  onSaveDisplayName(draftName);
+                  setEditingName(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.nameSaveBtnText}>Save</Text>
+              </TouchableOpacity>
+              {customDisplayName && (
+                <TouchableOpacity
+                  style={styles.nameResetBtn}
+                  onPress={() => {
+                    onSaveDisplayName(null);
+                    setEditingName(false);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.nameResetBtnText}>Reset</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
         <Text style={styles.subtitle}>
           Your scroll has a personality. Today, it is choosing balance.
         </Text>
@@ -136,7 +243,7 @@ export default function TodayScreen({
 
         <View style={styles.usageMain}>
           <View style={styles.usageCopyCol}>
-            {usageDisplay.hasVerifiedEstimate ? (
+            {showNumericEstimate ? (
               <Text style={styles.usageNumber}>
                 {usageDisplay.hours}
                 <Text style={styles.usageUnit}>h</Text>{' '}
@@ -149,6 +256,15 @@ export default function TodayScreen({
               </Text>
             )}
             <Text style={styles.usageLabel}>{usageDisplay.subtitleText}</Text>
+
+            {usageDisplay.staleOrIncompleteWarning && (
+              <View style={styles.warningPill}>
+                <Icon name="alert-circle" size={11} color={COLORS.yellow} />
+                <Text style={styles.warningPillText}>
+                  {usageDisplay.staleOrIncompleteWarning}
+                </Text>
+              </View>
+            )}
 
             {usageDisplay.hasVerifiedEstimate && (
               <View style={styles.sourcePill}>
@@ -392,15 +508,105 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: '#f7d755',
   },
+  greetingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 8,
+  },
   heading: {
-    fontSize: 32,
+    flex: 1,
+    fontSize: 30,
     fontWeight: '700',
     color: COLORS.ink,
     letterSpacing: -1,
-    marginTop: 8,
-    lineHeight: 36,
+    lineHeight: 34,
   },
   dot: { color: COLORS.pink },
+  editNameChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    backgroundColor: '#f1eaf9',
+    borderWidth: 1,
+    borderColor: '#e4d6f4',
+  },
+  editNameChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  nameEditorCard: {
+    marginTop: 10,
+    padding: 14,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    gap: 8,
+  },
+  nameEditorTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  nameEditorHint: {
+    fontSize: 10,
+    color: COLORS.muted,
+    lineHeight: 15,
+  },
+  nameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  nameInput: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#dfd3eb',
+    backgroundColor: '#faf6fe',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.ink,
+  },
+  nameClearBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nameSaveBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.purple,
+  },
+  nameSaveBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  nameResetBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 11,
+    borderRadius: 10,
+    backgroundColor: '#ffe8f2',
+  },
+  nameResetBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
   subtitle: {
     fontSize: 14,
     color: COLORS.muted,
@@ -489,6 +695,23 @@ const styles = StyleSheet.create({
     color: '#d6cbea',
     marginTop: 4,
     lineHeight: 17,
+  },
+  warningPill: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 5,
+    marginTop: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(41,16,76,0.48)',
+  },
+  warningPillText: {
+    flex: 1,
+    fontSize: 10,
+    color: '#ffe89c',
+    fontWeight: '600',
+    lineHeight: 14,
   },
   sourcePill: {
     flexDirection: 'row',

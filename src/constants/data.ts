@@ -51,21 +51,21 @@ export const DAILY_LIMIT_OPTIONS = [
 export const rankings: Record<LeaderboardTab, Ranking[]> = {
   Friends: [
     { name: 'Nadia', handle: 'nightshift.nadia', initials: 'N', xp: 391, change: '+42 XP' },
-    { name: 'You', handle: 'rafi.resets', initials: 'R', xp: 284, change: '+75 XP', current: true },
-    { name: 'Rafi', handle: 'rafi.scrolls', initials: 'R', xp: 242, change: '+28 XP' },
+    { name: 'You', handle: 'rot.resets', initials: 'Y', xp: 284, change: '+75 XP', current: true },
+    { name: 'Tariq', handle: 'tariq.scrolls', initials: 'T', xp: 242, change: '+28 XP' },
     { name: 'Mina', handle: 'minamakes', initials: 'M', xp: 198, change: '+19 XP' },
     { name: 'Jules', handle: 'julesoffline', initials: 'J', xp: 154, change: '+12 XP' },
   ],
   Squad: [
     { name: 'Team Grass', handle: 'the offline club', initials: 'T', xp: 1180, change: '+240 XP' },
-    { name: 'You', handle: 'rafi.resets', initials: 'R', xp: 284, change: '+75 XP', current: true },
+    { name: 'You', handle: 'rot.resets', initials: 'Y', xp: 284, change: '+75 XP', current: true },
     { name: 'Slow Scrolls', handle: 'the gentle gang', initials: 'S', xp: 240, change: '+64 XP' },
     { name: 'The Break Room', handle: 'pause enthusiasts', initials: 'B', xp: 197, change: '+31 XP' },
     { name: 'Tiny Victories', handle: 'one mission club', initials: 'T', xp: 116, change: '+22 XP' },
   ],
   Campus: [
     { name: 'Nadia', handle: 'north campus', initials: 'N', xp: 591, change: '+92 XP' },
-    { name: 'You', handle: 'north campus', initials: 'R', xp: 284, change: '+75 XP', current: true },
+    { name: 'You', handle: 'north campus', initials: 'Y', xp: 284, change: '+75 XP', current: true },
     { name: 'Miko', handle: 'north campus', initials: 'M', xp: 271, change: '+47 XP' },
     { name: 'Rin', handle: 'north campus', initials: 'R', xp: 220, change: '+39 XP' },
     { name: 'Ari', handle: 'north campus', initials: 'A', xp: 182, change: '+21 XP' },
