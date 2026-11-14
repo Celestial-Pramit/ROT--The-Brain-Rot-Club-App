@@ -6,11 +6,11 @@ import {
   TouchableOpacity,
   Animated,
   StatusBar,
-  SafeAreaView,
   Platform,
   AppState,
   AppStateStatus,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { COLORS } from './src/constants/theme';
 import {
@@ -492,7 +492,8 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaProvider>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="dark-content" />
 
       {/* Top Bar */}
@@ -608,6 +609,7 @@ export default function App() {
         </Animated.View>
       )}
     </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -615,7 +617,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.cream,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
 
   // Top Bar
