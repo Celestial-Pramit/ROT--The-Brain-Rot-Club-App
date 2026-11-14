@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "ROT. The Brainrot Club",
+    "slug": "rot-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rot.brainrotclub"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#fff9ea"
+      },
+      "package": "com.rot.brainrotclub"
+    },
+    "plugins": [
+      "expo-asset"
+    ]
+  }
+}
