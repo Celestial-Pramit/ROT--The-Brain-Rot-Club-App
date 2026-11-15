@@ -1,5 +1,14 @@
-import { NativeModules, Platform } from 'react-native';
-import { InstagramUsageSummary } from '../constants/types';
+import {
+  DeviceEventEmitter,
+  NativeModules,
+  PermissionsAndroid,
+  Platform,
+} from 'react-native';
+import {
+  InstagramUsageSummary,
+  NotificationInboxSnapshot,
+  NotificationStatusSnapshot,
+} from '../constants/types';
 
 export type DeviceProfileInfo = {
   deviceName: string;
@@ -8,16 +17,94 @@ export type DeviceProfileInfo = {
   sdkInt: number;
 };
 
+export type NotificationSyncPayload = {
+  dailyGentleNudge: boolean;
+  missionReminders: boolean;
+  streakReminders: boolean;
+  weekendBreathingRoom: boolean;
+  consentAccepted: boolean;
+  trackingEnabled: boolean;
+  dailyLimitMinutes: number;
+  eveningReminderHour: number;
+  eveningReminderMinute: number;
+  streakReminderHour: number;
+  streakReminderMinute: number;
+  quietHoursEnabled: boolean;
+  quietStartHour: number;
+  quietEndHour: number;
+  currentStreak: number;
+  syncedDateKey: string;
+  anyNonLimitMissionDoneToday: boolean;
+  streakActiveToday: boolean;
+  sentKeysToday: string[];
+};
+
+export type PreparedCardPngResult = {
+  filePath: string;
+  filename: string;
+  width: number;
+  height: number;
+  byteSize: number;
+};
+
+export type GallerySaveResult = {
+  status: 'saved' | 'already_saved';
+  contentUri: string;
+  filename: string;
+  album: string;
+};
+
+export type NativeShareResult = {
+  status: 'shared' | 'closed' | 'opened' | 'no_app' | 'superseded';
+  contentUri?: string;
+};
+
 type RotUsageStatsNativeModule = {
   hasUsageAccess(): Promise<boolean>;
   isInstagramInstalled(): Promise<boolean>;
   openUsageAccessSettings(): Promise<boolean>;
   getDeviceProfileInfo(): Promise<DeviceProfileInfo>;
   getInstagramUsageSummary(daysBack: number): Promise<InstagramUsageSummary>;
+  areNotificationsEnabled?(): Promise<boolean>;
+  getNotificationStatus?(): Promise<NotificationStatusSnapshot>;
+  openNotificationSettings?(channelId: string | null): Promise<boolean>;
+  syncNotificationConfig?(config: NotificationSyncPayload): Promise<boolean>;
+  triggerBackgroundUsageCheckNow?(): Promise<boolean>;
+  postLocalNotification?(
+    notificationId: number,
+    title: string,
+    body: string
+  ): Promise<boolean>;
+  getNotificationInbox?(): Promise<NotificationInboxSnapshot>;
+  markAllNotificationsRead?(): Promise<NotificationInboxSnapshot>;
+  clearNotificationHistory?(): Promise<NotificationInboxSnapshot>;
+};
+
+type RotCardMediaNativeModule = {
+  prepareAndVerifyCardPng(
+    sourceUri: string,
+    targetWidth: number,
+    targetHeight: number,
+    filename: string
+  ): Promise<PreparedCardPngResult>;
+  saveCardToGallery(
+    filePath: string,
+    filename: string,
+    dedupKey: string
+  ): Promise<GallerySaveResult>;
+  shareCardPng(
+    filePath: string,
+    filename: string,
+    shareText: string,
+    includeMetadata: boolean
+  ): Promise<NativeShareResult>;
 };
 
 const NativeRotUsageStats: RotUsageStatsNativeModule | undefined =
   Platform.OS === 'android' ? NativeModules.RotUsageStats : undefined;
+
+const NativeRotCardMedia: RotCardMediaNativeModule | undefined =
+  Platform.OS === 'android' ? NativeModules.RotCardMedia : undefined;
 
 const QUERY_TIMEOUT_MS = 6000;
 
@@ -46,6 +133,230 @@ export async function openAndroidUsageAccessSettings(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function fetchNotificationStatus(): Promise<NotificationStatusSnapshot> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.getNotificationStatus) {
+    return {
+      runtimePermissionGranted: false,
+      appNotificationsEnabled: false,
+      nudgesChannelEnabled: false,
+      remindersChannelEnabled: false,
+      statusCode: 'notifications_off',
+      quietHoursActiveNow: false,
+      sentKeysToday: [],
+    };
+  }
+  try {
+    return await NativeRotUsageStats.getNotificationStatus();
+  } catch {
+    return {
+      runtimePermissionGranted: false,
+      appNotificationsEnabled: false,
+      nudgesChannelEnabled: false,
+      remindersChannelEnabled: false,
+      statusCode: 'notifications_off',
+      quietHoursActiveNow: false,
+      sentKeysToday: [],
+    };
+  }
+}
+
+export async function openAndroidNotificationSettings(
+  channelId: string | null = null
+): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.openNotificationSettings) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.openNotificationSettings(channelId);
+  } catch {
+    return false;
+  }
+}
+
+export async function syncNativeNotificationConfig(
+  payload: NotificationSyncPayload
+): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.syncNotificationConfig) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.syncNotificationConfig(payload);
+  } catch {
+    return false;
+  }
+}
+
+export async function triggerNativeBackgroundUsageCheck(): Promise<boolean> {
+  if (
+    Platform.OS !== 'android' ||
+    !NativeRotUsageStats?.triggerBackgroundUsageCheckNow
+  ) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.triggerBackgroundUsageCheckNow();
+  } catch {
+    return false;
+  }
+}
+
+export async function checkAndRequestNotificationPermission(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  try {
+    if (typeof Platform.Version === 'number' && Platform.Version >= 33) {
+      const permission = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
+      if (permission) {
+        const alreadyGranted = await PermissionsAndroid.check(permission);
+        if (!alreadyGranted) {
+          const status = await PermissionsAndroid.request(permission);
+          if (status !== PermissionsAndroid.RESULTS.GRANTED) {
+            return false;
+          }
+        }
+      }
+    }
+    if (NativeRotUsageStats?.areNotificationsEnabled) {
+      return await NativeRotUsageStats.areNotificationsEnabled();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function sendLocalNotification(
+  notificationId: number,
+  title: string,
+  body: string
+): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.postLocalNotification) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.postLocalNotification(
+      notificationId,
+      title,
+      body
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchNotificationInbox(): Promise<NotificationInboxSnapshot> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.getNotificationInbox) {
+    return { unreadCount: 0, items: [] };
+  }
+  try {
+    const res = await NativeRotUsageStats.getNotificationInbox();
+    return {
+      unreadCount: typeof res?.unreadCount === 'number' ? res.unreadCount : 0,
+      items: Array.isArray(res?.items) ? res.items : [],
+    };
+  } catch {
+    return { unreadCount: 0, items: [] };
+  }
+}
+
+export async function markAllNativeNotificationsRead(): Promise<NotificationInboxSnapshot> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.markAllNotificationsRead) {
+    return { unreadCount: 0, items: [] };
+  }
+  try {
+    const res = await NativeRotUsageStats.markAllNotificationsRead();
+    return {
+      unreadCount: typeof res?.unreadCount === 'number' ? res.unreadCount : 0,
+      items: Array.isArray(res?.items) ? res.items : [],
+    };
+  } catch {
+    return { unreadCount: 0, items: [] };
+  }
+}
+
+export async function clearNativeNotificationHistory(): Promise<NotificationInboxSnapshot> {
+  if (Platform.OS !== 'android' || !NativeRotUsageStats?.clearNotificationHistory) {
+    return { unreadCount: 0, items: [] };
+  }
+  try {
+    const res = await NativeRotUsageStats.clearNotificationHistory();
+    return {
+      unreadCount: typeof res?.unreadCount === 'number' ? res.unreadCount : 0,
+      items: Array.isArray(res?.items) ? res.items : [],
+    };
+  } catch {
+    return { unreadCount: 0, items: [] };
+  }
+}
+
+export function subscribeToNativeNotificationUpdates(
+  listener: () => void
+): () => void {
+  if (Platform.OS !== 'android') {
+    return () => {};
+  }
+  const sub = DeviceEventEmitter.addListener('RotNotificationsUpdated', listener);
+  return () => sub.remove();
+}
+
+export async function prepareAndVerifyCardPng(
+  sourceUri: string,
+  targetWidth: number,
+  targetHeight: number,
+  filename: string
+): Promise<PreparedCardPngResult> {
+  if (Platform.OS !== 'android' || !NativeRotCardMedia) {
+    throw new Error('Native card media module is unavailable on this platform.');
+  }
+  return await NativeRotCardMedia.prepareAndVerifyCardPng(
+    sourceUri,
+    targetWidth,
+    targetHeight,
+    filename
+  );
+}
+
+export async function saveCardPngToGallery(
+  filePath: string,
+  filename: string,
+  dedupKey: string
+): Promise<GallerySaveResult> {
+  if (Platform.OS !== 'android' || !NativeRotCardMedia) {
+    throw new Error('Native card media module is unavailable on this platform.');
+  }
+  if (typeof Platform.Version === 'number' && Platform.Version < 29) {
+    const perm = PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE;
+    if (perm) {
+      const granted = await PermissionsAndroid.check(perm);
+      if (!granted) {
+        const res = await PermissionsAndroid.request(perm);
+        if (res !== PermissionsAndroid.RESULTS.GRANTED) {
+          const err = new Error('Storage permission denied');
+          (err as any).code = 'STORAGE_PERMISSION_DENIED';
+          throw err;
+        }
+      }
+    }
+  }
+  return await NativeRotCardMedia.saveCardToGallery(filePath, filename, dedupKey);
+}
+
+export async function shareCardPngNative(
+  filePath: string,
+  filename: string,
+  shareText: string,
+  includeMetadata: boolean
+): Promise<NativeShareResult> {
+  if (Platform.OS !== 'android' || !NativeRotCardMedia) {
+    throw new Error('Native card media module is unavailable on this platform.');
+  }
+  return await NativeRotCardMedia.shareCardPng(
+    filePath,
+    filename,
+    shareText,
+    includeMetadata
+  );
 }
 
 export async function queryDeviceProfileInfo(): Promise<DeviceProfileInfo> {

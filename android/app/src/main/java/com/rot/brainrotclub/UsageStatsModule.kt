@@ -1,101 +1,64 @@
 package com.rot.brainrotclub
 
-import android.app.AppOpsManager
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Process
 import android.provider.Settings
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import kotlin.math.max
-import kotlin.math.min
+import com.facebook.react.modules.core.DeviceEventManagerModule
+import org.json.JSONArray
+import org.json.JSONObject
+import java.lang.ref.WeakReference
 
 class UsageStatsModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     companion object {
         const val NAME = "RotUsageStats"
-        const val INSTAGRAM_PACKAGE = "com.instagram.android"
-        private const val MAX_SINGLE_SESSION_MS = 4 * 60 * 60 * 1000L // 4-hour cap against missing stop events
-        private const val SESSION_GAP_MERGE_MS = 1500L // Merge sub-1.5s intra-app activity transitions
+        const val INSTAGRAM_PACKAGE = RotUsageTracker.INSTAGRAM_PACKAGE
+        const val EVENT_NOTIFICATIONS_UPDATED = "RotNotificationsUpdated"
+
+        @Volatile
+        private var activeContextRef: WeakReference<ReactApplicationContext>? = null
+
+        fun emitNotificationsUpdated() {
+            try {
+                val ctx = activeContextRef?.get() ?: return
+                if (ctx.hasActiveReactInstance()) {
+                    ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        .emit(EVENT_NOTIFICATIONS_UPDATED, null)
+                }
+            } catch (_: Exception) {
+                // Ignore if headless or JS instance is tearing down
+            }
+        }
     }
 
-    private data class DayWindow(
-        val dateKey: String,
-        val dayLabel: String,
-        val startMs: Long,
-        val endMs: Long,
-        var eventDurationMs: Long = 0L,
-        var statsDurationMs: Long = 0L,
-        var sessionCount: Int = 0,
-        var anyDeviceEvents: Boolean = false
-    )
+    init {
+        activeContextRef = WeakReference(reactContext)
+    }
+
+    override fun invalidate() {
+        val current = activeContextRef?.get()
+        if (current === reactApplicationContext) {
+            activeContextRef = null
+        }
+        super.invalidate()
+    }
 
     override fun getName(): String = NAME
-
-    private fun checkUsageAccessGranted(context: Context): Boolean {
-        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
-            ?: return false
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            appOps.unsafeCheckOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                Process.myUid(),
-                context.packageName
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            appOps.checkOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                Process.myUid(),
-                context.packageName
-            )
-        }
-        if (mode == AppOpsManager.MODE_ALLOWED) {
-            return true
-        }
-        if (mode == AppOpsManager.MODE_DEFAULT) {
-            return context.checkCallingOrSelfPermission(android.Manifest.permission.PACKAGE_USAGE_STATS) ==
-                PackageManager.PERMISSION_GRANTED
-        }
-        return false
-    }
-
-    private fun checkPackageInstalled(context: Context, packageName: String): Boolean {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.packageManager.getPackageInfo(
-                    packageName,
-                    PackageManager.PackageInfoFlags.of(0)
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(packageName, 0)
-            }
-            true
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
-        } catch (_: Exception) {
-            false
-        }
-    }
 
     @ReactMethod
     fun hasUsageAccess(promise: Promise) {
         try {
-            promise.resolve(checkUsageAccessGranted(reactApplicationContext))
+            promise.resolve(RotUsageTracker.checkUsageAccessGranted(reactApplicationContext))
         } catch (_: Exception) {
             promise.resolve(false)
         }
@@ -104,7 +67,7 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun isInstagramInstalled(promise: Promise) {
         try {
-            promise.resolve(checkPackageInstalled(reactApplicationContext, INSTAGRAM_PACKAGE))
+            promise.resolve(RotUsageTracker.checkPackageInstalled(reactApplicationContext, INSTAGRAM_PACKAGE))
         } catch (_: Exception) {
             promise.resolve(false)
         }
@@ -194,12 +157,247 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun areNotificationsEnabled(promise: Promise) {
+        try {
+            val status = RotNotificationHelper.getStatus(reactApplicationContext)
+            promise.resolve(status.canDeliverAny)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getNotificationStatus(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val status = RotNotificationHelper.getStatus(context)
+            val config = RotNotificationPrefs.loadConfig(context)
+            val sentToday = RotNotificationPrefs.getSentKeysForDate(
+                context,
+                RotNotificationPrefs.todayDateKey()
+            )
+            val sentArr = Arguments.createArray()
+            for (k in sentToday) sentArr.pushString(k)
+
+            val map = Arguments.createMap().apply {
+                putBoolean("runtimePermissionGranted", status.runtimePermissionGranted)
+                putBoolean("appNotificationsEnabled", status.appNotificationsEnabled)
+                putBoolean("nudgesChannelEnabled", status.nudgesChannelEnabled)
+                putBoolean("remindersChannelEnabled", status.remindersChannelEnabled)
+                putString("statusCode", status.statusCode)
+                putBoolean("quietHoursActiveNow", RotNotificationPrefs.isWithinQuietHours(config))
+                putArray("sentKeysToday", sentArr)
+            }
+            promise.resolve(map)
+        } catch (_: Exception) {
+            val map = Arguments.createMap().apply {
+                putBoolean("runtimePermissionGranted", false)
+                putBoolean("appNotificationsEnabled", false)
+                putBoolean("nudgesChannelEnabled", false)
+                putBoolean("remindersChannelEnabled", false)
+                putString("statusCode", "notifications_off")
+                putBoolean("quietHoursActiveNow", false)
+                putArray("sentKeysToday", Arguments.createArray())
+            }
+            promise.resolve(map)
+        }
+    }
+
+    @ReactMethod
+    fun openNotificationSettings(channelId: String?, promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            RotNotificationHelper.ensureChannels(context)
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !channelId.isNullOrBlank()) {
+                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            try {
+                context.startActivity(intent)
+                promise.resolve(true)
+                return
+            } catch (_: Exception) {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallback)
+                promise.resolve(true)
+            }
+        } catch (e: Exception) {
+            promise.reject("OPEN_NOTIFICATION_SETTINGS_ERROR", "Unable to open Notification settings: ${e.message}", e)
+        }
+    }
+
+    @ReactMethod
+    fun syncNotificationConfig(configMap: ReadableMap, promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val config = RotNotificationConfig(
+                dailyGentleNudge = if (configMap.hasKey("dailyGentleNudge")) configMap.getBoolean("dailyGentleNudge") else true,
+                missionReminders = if (configMap.hasKey("missionReminders")) configMap.getBoolean("missionReminders") else true,
+                streakReminders = if (configMap.hasKey("streakReminders")) configMap.getBoolean("streakReminders") else true,
+                weekendBreathingRoom = if (configMap.hasKey("weekendBreathingRoom")) configMap.getBoolean("weekendBreathingRoom") else false,
+                consentAccepted = if (configMap.hasKey("consentAccepted")) configMap.getBoolean("consentAccepted") else false,
+                trackingEnabled = if (configMap.hasKey("trackingEnabled")) configMap.getBoolean("trackingEnabled") else true,
+                dailyLimitMinutes = if (configMap.hasKey("dailyLimitMinutes")) configMap.getInt("dailyLimitMinutes") else 120,
+                eveningReminderHour = if (configMap.hasKey("eveningReminderHour")) configMap.getInt("eveningReminderHour") else 19,
+                eveningReminderMinute = if (configMap.hasKey("eveningReminderMinute")) configMap.getInt("eveningReminderMinute") else 0,
+                streakReminderHour = if (configMap.hasKey("streakReminderHour")) configMap.getInt("streakReminderHour") else 21,
+                streakReminderMinute = if (configMap.hasKey("streakReminderMinute")) configMap.getInt("streakReminderMinute") else 0,
+                quietHoursEnabled = if (configMap.hasKey("quietHoursEnabled")) configMap.getBoolean("quietHoursEnabled") else true,
+                quietStartHour = if (configMap.hasKey("quietStartHour")) configMap.getInt("quietStartHour") else 22,
+                quietEndHour = if (configMap.hasKey("quietEndHour")) configMap.getInt("quietEndHour") else 8,
+                currentStreak = if (configMap.hasKey("currentStreak")) configMap.getInt("currentStreak") else 1,
+                syncedDateKey = if (configMap.hasKey("syncedDateKey")) configMap.getString("syncedDateKey") ?: "" else "",
+                anyNonLimitMissionDoneToday = if (configMap.hasKey("anyNonLimitMissionDoneToday")) configMap.getBoolean("anyNonLimitMissionDoneToday") else false,
+                streakActiveToday = if (configMap.hasKey("streakActiveToday")) configMap.getBoolean("streakActiveToday") else false
+            )
+
+            var sentJson: JSONObject? = null
+            if (configMap.hasKey("sentKeysToday") && configMap.hasKey("syncedDateKey")) {
+                val dk = configMap.getString("syncedDateKey").orEmpty()
+                val arr = configMap.getArray("sentKeysToday")
+                if (dk.isNotEmpty() && arr != null) {
+                    val ja = JSONArray()
+                    for (i in 0 until arr.size()) {
+                        val s = arr.getString(i)
+                        if (!s.isNullOrEmpty()) ja.put(s)
+                    }
+                    sentJson = JSONObject().apply { put(dk, ja) }
+                }
+            }
+
+            RotNotificationHelper.ensureChannels(context)
+            RotNotificationPrefs.saveConfig(context, config, sentJson)
+            RotNotificationScheduler.rescheduleAll(context)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("SYNC_NOTIF_CONFIG_ERROR", "Unable to sync notification config: ${e.message}", e)
+        }
+    }
+
+    @ReactMethod
+    fun triggerBackgroundUsageCheckNow(promise: Promise) {
+        try {
+            RotNotificationScheduler.triggerImmediateUsageCheck(reactApplicationContext)
+            promise.resolve(true)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun postLocalNotification(
+        notificationId: Int,
+        title: String,
+        body: String,
+        promise: Promise
+    ) {
+        try {
+            val channelId = if (notificationId == 1003 || notificationId == 1004) {
+                RotNotificationHelper.CHANNEL_REMINDERS_ID
+            } else {
+                RotNotificationHelper.CHANNEL_NUDGES_ID
+            }
+            val posted = RotNotificationHelper.postNotification(
+                context = reactApplicationContext,
+                channelId = channelId,
+                notificationId = notificationId,
+                title = title,
+                body = body
+            )
+            promise.resolve(posted)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    private fun buildInboxSnapshotMap(items: List<RotNotificationRecord>): WritableMap {
+        val arr = Arguments.createArray()
+        var unreadCount = 0
+        for (item in items) {
+            if (!item.read) unreadCount++
+            val row = Arguments.createMap().apply {
+                putString("id", item.id)
+                putInt("notificationId", item.notificationId)
+                putString("channelId", item.channelId)
+                putString("title", item.title)
+                putString("body", item.body)
+                putDouble("createdAtMs", item.createdAtMs.toDouble())
+                putString("dateKey", item.dateKey)
+                putBoolean("read", item.read)
+            }
+            arr.pushMap(row)
+        }
+        return Arguments.createMap().apply {
+            putInt("unreadCount", unreadCount)
+            putArray("items", arr)
+        }
+    }
+
+    @ReactMethod
+    fun getNotificationInbox(promise: Promise) {
+        try {
+            val items = RotNotificationPrefs.getNotificationHistory(reactApplicationContext)
+            promise.resolve(buildInboxSnapshotMap(items))
+        } catch (_: Exception) {
+            val empty = Arguments.createMap().apply {
+                putInt("unreadCount", 0)
+                putArray("items", Arguments.createArray())
+            }
+            promise.resolve(empty)
+        }
+    }
+
+    @ReactMethod
+    fun markAllNotificationsRead(promise: Promise) {
+        try {
+            val updated = RotNotificationPrefs.markAllNotificationsRead(reactApplicationContext)
+            promise.resolve(buildInboxSnapshotMap(updated))
+        } catch (_: Exception) {
+            val empty = Arguments.createMap().apply {
+                putInt("unreadCount", 0)
+                putArray("items", Arguments.createArray())
+            }
+            promise.resolve(empty)
+        }
+    }
+
+    @ReactMethod
+    fun clearNotificationHistory(promise: Promise) {
+        try {
+            RotNotificationPrefs.clearNotificationHistory(reactApplicationContext)
+            promise.resolve(buildInboxSnapshotMap(emptyList()))
+        } catch (_: Exception) {
+            val empty = Arguments.createMap().apply {
+                putInt("unreadCount", 0)
+                putArray("items", Arguments.createArray())
+            }
+            promise.resolve(empty)
+        }
+    }
+
+    @ReactMethod
     fun getInstagramUsageSummary(daysBack: Int, promise: Promise) {
         try {
             val context = reactApplicationContext
             val now = System.currentTimeMillis()
-            val hasPermission = checkUsageAccessGranted(context)
-            val instagramInstalled = checkPackageInstalled(context, INSTAGRAM_PACKAGE)
+            val hasPermission = RotUsageTracker.checkUsageAccessGranted(context)
+            val instagramInstalled = RotUsageTracker.checkPackageInstalled(context, INSTAGRAM_PACKAGE)
             val deviceName = resolveBestDeviceName(context)
 
             val result = Arguments.createMap().apply {
@@ -226,9 +424,8 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 return
             }
 
-            val usageStatsManager =
-                context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
-            if (usageStatsManager == null) {
+            val snapshot = RotUsageTracker.queryInstagramUsage(context, daysBack, now)
+            if (snapshot == null) {
                 result.putString("status", "query_failed")
                 result.putString(
                     "statusReason",
@@ -242,150 +439,9 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 return
             }
 
-            val safeDays = max(1, min(daysBack, 14))
-            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-            val dayLabelFormat = SimpleDateFormat("EEE", Locale.US)
-
-            val cal = Calendar.getInstance()
-            cal.timeInMillis = now
-            cal.set(Calendar.HOUR_OF_DAY, 0)
-            cal.set(Calendar.MINUTE, 0)
-            cal.set(Calendar.SECOND, 0)
-            cal.set(Calendar.MILLISECOND, 0)
-            val todayStartMs = cal.timeInMillis
-
-            cal.add(Calendar.DAY_OF_YEAR, -(safeDays - 1))
-            val windowStartMs = cal.timeInMillis
-
-            val dayWindows = mutableListOf<DayWindow>()
-            val iterCal = Calendar.getInstance().apply { timeInMillis = windowStartMs }
-            for (i in 0 until safeDays) {
-                val start = iterCal.timeInMillis
-                iterCal.add(Calendar.DAY_OF_YEAR, 1)
-                val end = min(iterCal.timeInMillis, now)
-                val d = Date(start)
-                dayWindows.add(
-                    DayWindow(
-                        dateKey = dateFormat.format(d),
-                        dayLabel = dayLabelFormat.format(d).take(1).uppercase(Locale.US),
-                        startMs = start,
-                        endMs = end
-                    )
-                )
-            }
-
-            // 1. Parse UsageEvents tracking per-activity foreground state for Instagram
-            var totalSystemEventsCount = 0
-            var lastEventTimestamp = 0L
-
-            val activeIgClasses = mutableSetOf<String>()
-            var currentSessionStart: Long? = null
-            var pendingSessionEnd: Long? = null
-
-            val usageEvents = usageStatsManager.queryEvents(windowStartMs, now)
-            val event = UsageEvents.Event()
-
-            while (usageEvents != null && usageEvents.hasNextEvent()) {
-                usageEvents.getNextEvent(event)
-                totalSystemEventsCount++
-                if (event.timeStamp > lastEventTimestamp) {
-                    lastEventTimestamp = event.timeStamp
-                }
-
-                for (dw in dayWindows) {
-                    if (event.timeStamp in dw.startMs..dw.endMs) {
-                        dw.anyDeviceEvents = true
-                        break
-                    }
-                }
-
-                // Flush any pending session end if time has advanced beyond merge gap
-                val pStart = currentSessionStart
-                val pEnd = pendingSessionEnd
-                if (pStart != null && pEnd != null && activeIgClasses.isEmpty() &&
-                    (event.timeStamp - pEnd > SESSION_GAP_MERGE_MS || event.packageName != INSTAGRAM_PACKAGE)
-                ) {
-                    val cappedEnd = min(pEnd, pStart + MAX_SINGLE_SESSION_MS)
-                    distributeIntervalToDays(pStart, cappedEnd, dayWindows)
-                    currentSessionStart = null
-                    pendingSessionEnd = null
-                }
-
-                if (event.packageName == INSTAGRAM_PACKAGE) {
-                    val cls = event.className ?: "default"
-                    when (event.eventType) {
-                        UsageEvents.Event.ACTIVITY_RESUMED -> {
-                            activeIgClasses.add(cls)
-                            if (currentSessionStart == null) {
-                                currentSessionStart = event.timeStamp
-                            }
-                            pendingSessionEnd = null
-                        }
-                        UsageEvents.Event.ACTIVITY_PAUSED -> {
-                            activeIgClasses.remove(cls)
-                            if (activeIgClasses.isEmpty() && currentSessionStart != null) {
-                                pendingSessionEnd = event.timeStamp
-                            }
-                        }
-                        UsageEvents.Event.ACTIVITY_STOPPED -> {
-                            // Only treat STOP as end if that specific class was still considered active
-                            if (activeIgClasses.remove(cls) && activeIgClasses.isEmpty() && currentSessionStart != null) {
-                                pendingSessionEnd = event.timeStamp
-                            }
-                        }
-                    }
-                } else if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                    // Another app came to foreground; immediately close any active Instagram session
-                    if (currentSessionStart != null) {
-                        val endTs = pendingSessionEnd ?: event.timeStamp
-                        val cappedEnd = min(endTs, currentSessionStart!! + MAX_SINGLE_SESSION_MS)
-                        distributeIntervalToDays(currentSessionStart!!, cappedEnd, dayWindows)
-                        activeIgClasses.clear()
-                        currentSessionStart = null
-                        pendingSessionEnd = null
-                    }
-                }
-            }
-
-            // Close any remaining session at the end of event stream
-            if (currentSessionStart != null) {
-                val endTs = if (activeIgClasses.isNotEmpty()) now else (pendingSessionEnd ?: now)
-                val cappedEnd = min(endTs, currentSessionStart!! + MAX_SINGLE_SESSION_MS)
-                distributeIntervalToDays(currentSessionStart!!, cappedEnd, dayWindows)
-            }
-
-            // 2. Query aggregate UsageStats buckets as fallback for older days where UsageEvents were pruned
-            val statsList = usageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY,
-                windowStartMs,
-                now
-            )
-            var anyStatsRecords = false
-            if (!statsList.isNullOrEmpty()) {
-                anyStatsRecords = true
-                for (stat in statsList) {
-                    if (stat.packageName == INSTAGRAM_PACKAGE && stat.totalTimeInForeground > 0) {
-                        val refTime = if (stat.lastTimeUsed >= windowStartMs) stat.lastTimeUsed else stat.firstTimeStamp
-                        for (dw in dayWindows) {
-                            if (refTime in dw.startMs..dw.endMs) {
-                                // Take max rather than summing duplicate OEM daily buckets
-                                if (stat.totalTimeInForeground > dw.statsDurationMs) {
-                                    dw.statsDurationMs = stat.totalTimeInForeground
-                                }
-                                break
-                            }
-                        }
-                    }
-                }
-            }
-
-            val osHasAnyUsageData = totalSystemEventsCount > 0 || anyStatsRecords
-            val todayWindow = dayWindows.last()
-            val todayMs = if (todayWindow.eventDurationMs > 0L) {
-                todayWindow.eventDurationMs
-            } else {
-                todayWindow.statsDurationMs
-            }
+            val osHasAnyUsageData = snapshot.totalSystemEventsCount > 0 || snapshot.anyStatsRecords
+            val todayWindow = snapshot.todayWindow
+            val todayMs = snapshot.todayMs
             val todaySource = when {
                 todayWindow.eventDurationMs > 0L -> "usage_events"
                 todayWindow.statsDurationMs > 0L -> "daily_aggregate"
@@ -395,14 +451,14 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             val todayComplete = todayWindow.eventDurationMs > 0L || todayWindow.anyDeviceEvents
 
             val breakdownArray = Arguments.createArray()
-            for (dw in dayWindows) {
+            for (dw in snapshot.dayWindows) {
                 val chosenMs = if (dw.eventDurationMs > 0L) dw.eventDurationMs else dw.statsDurationMs
                 val dayMap: WritableMap = Arguments.createMap().apply {
                     putString("date", dw.dateKey)
                     putString("dayLabel", dw.dayLabel)
                     putDouble("foregroundMs", chosenMs.toDouble())
                     putInt("sessionCount", dw.sessionCount)
-                    putBoolean("hasOsCoverage", dw.anyDeviceEvents || anyStatsRecords)
+                    putBoolean("hasOsCoverage", dw.anyDeviceEvents || snapshot.anyStatsRecords)
                     putString(
                         "source",
                         if (dw.eventDurationMs > 0L) "usage_events" else if (dw.statsDurationMs > 0L) "daily_aggregate" else "zero_or_empty"
@@ -412,9 +468,9 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             }
 
             result.putArray("dailyBreakdown", breakdownArray)
-            result.putInt("totalSystemEventsScanned", totalSystemEventsCount)
-            result.putDouble("lastOsEventAtMs", lastEventTimestamp.toDouble())
-            result.putDouble("todayStartMs", todayStartMs.toDouble())
+            result.putInt("totalSystemEventsScanned", snapshot.totalSystemEventsCount)
+            result.putDouble("lastOsEventAtMs", snapshot.lastEventTimestamp.toDouble())
+            result.putDouble("todayStartMs", snapshot.todayStartMs.toDouble())
             result.putString("aggregationSource", todaySource)
             result.putBoolean("isComplete", todayComplete)
 
@@ -470,22 +526,6 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("USAGE_QUERY_ERROR", "Failed to query UsageStats: ${e.message}", e)
-        }
-    }
-
-    private fun distributeIntervalToDays(
-        intervalStart: Long,
-        intervalEnd: Long,
-        dayWindows: List<DayWindow>
-    ) {
-        if (intervalEnd <= intervalStart) return
-        for (dw in dayWindows) {
-            val clippedStart = max(intervalStart, dw.startMs)
-            val clippedEnd = min(intervalEnd, dw.endMs)
-            if (clippedEnd > clippedStart) {
-                dw.eventDurationMs += (clippedEnd - clippedStart)
-                dw.sessionCount += 1
-            }
         }
     }
 }

@@ -1,399 +1,302 @@
-# ROT. — Executive Demo Finalization, User Identity, Data-State UX & 3-PR Roadmap
+# ROT. — Executive Project Report: Phase 1 Foundation to MVP Completion (`PR #1` – `PR #2.1`)
 
-**Project:** ROT – The Brainrot Club (`com.rot.brainrotclub`)  
-**Branch:** `feature/rot-executive-demo`  
-**Base Commit:** `d771b8e` (`Update UI to match web mockups: fix icons, layouts, and visual elements`)  
-**Target Device Verified:** Xiaomi Redmi 11 Prime (`22071219AI`), Android 14 (API 34, MIUI / HyperOS)
-
----
-
-## 1. Executive Summary
-
-ROT – The Brainrot Club has been upgraded from a static UI prototype into a working, local-first Android Executive Demo (`PR #1`) verified on physical hardware (**Xiaomi Redmi 11 Prime, Android 14**).
-
-Key deliverables completed and verified in this branch:
-1. **Native Android Development Build (`android/`):** Configured for **Expo `58.0.24`** and **React Native `0.88.1`** (`compileSdk 37`, `targetSdk 36`, `minSdk 24`, **Kotlin `2.2.10`**, **NDK `27.1.12297006`**), including a portable Windows CMake staging directory fix (`${rootDir.toPath().root}rot-cxx`).
-2. **Local-First Device & Custom Display-Name System (`Part B`):** Removed all hardcoded `"Rafi"` / `"rafi"` strings across the codebase (enforced by static lint check in `scripts/lint.mjs`). On first launch, `UsageStatsModule.kt` resolves the best available Android device/model name (`Redmi 11 Prime` on the test phone). Users can edit their display name inline from the **Today** screen or in **Settings > Profile & Display Name** (trimmed, non-blank, max 28 characters), persist it in `AsyncStorage` across cold restarts, and revert to the device-name default (`Redmi 11 Prime`) or `"ROT User"` fallback at any time.
-3. **Structured 9-State `UsageStats` Data Contract (`Part C`):** Every query returns a typed `UsageQueryResult` (`status`, `estimatedMinutes`, `lastUpdatedAt`, `source`, `isComplete`, `errorCode`) and distinguishes `permission_required`, `tracking_paused`, `not_installed`, `no_os_record`, `query_failed`, `stale`, `incomplete`, `zero_usage`, and `ok`. Missing, paused, or failed queries **never** render `0h 00m`, and `cachedUsageSummary` is stored separately so failed or revoked queries never erase valid historical data.
-4. **Complete SRS Traceability (`Part D`):** Audited against the original 37-page `Software Requirements Specification and Project Plan.pdf` (`FR-001` through `FR-031`, `NFR-01` through `NFR-18`, `BT-01` through `BT-15`, and `AT-01` through `AT-12`).
-5. **Three-PR Delivery Strategy (`Part H` & `Part I`):** Packaged `PR #1` (`feature/rot-executive-demo`) for immediate review and defined concrete implementation plans for `PR #2` (`feature/rot-mvp-core`) and `PR #3` (`feature/rot-product-experience`).
+**Project:** ROT. – The Brainrot Club (`com.rot.brainrotclub`)  
+**Current Branch:** `feature/rot-mvp-core` (Phase 2 MVP + `PR #2.1` UX & Media Upgrade)  
+**Previous Milestone Branch:** `feature/rot-executive-demo` (`PR #1`, Commit `6554c81`, branched from `d771b8e`)  
+**Verified Hardware:** Xiaomi Redmi 11 Prime (`22071219AI`), Android 14 (API 34, MIUI / HyperOS)  
+**Document Scope:** Transition record from Phase 1 Executive Demo to Completed Local-First MVP, including cross-check against `Software Requirements Specification and Project Plan.pdf` (v1.0, 11 November 2026)
 
 ---
 
-## 2. Branch and Commit Audit
+## A. Project Overview
 
-- **Active Branch:** `feature/rot-executive-demo` (branched from `main` at `d771b8e`).
-- **Protected Untracked / Unstaged Local Files (Never Committed):**
-  - `.idea/caches/deviceStreaming.xml` (modified, unstaged — preserved untouched)
-  - `.idea/vcs.xml` (untracked — preserved untouched)
-  - `Software Requirements Specification and Project Plan.pdf` (untracked — preserved untouched)
+**ROT. – The Brainrot Club** is a local-first, privacy-respecting Android digital wellbeing companion that helps users understand and manage their Instagram scrolling habits without shame, dark patterns, or Instagram account login.
 
-### Commit History on `feature/rot-executive-demo`
+- **Original Problem Statement & Objectives (SRS Sections 1–2):**
+  - Help users understand their Instagram usage using honest **estimated Instagram foreground time** via Android's `UsageStatsManager`, while explicitly acknowledging OS boundaries (never claiming exact Reel counts or relying on fragile, policy-sensitive `AccessibilityService` scraping).
+  - Encourage self-directed healthier habits through configurable daily targets, gentle non-shaming nudges, and offline recovery breaks.
+  - Make habit awareness engaging via non-monetary XP, levels, badges, daily missions, weekly quests, streaks, and a playful mascot—without rewarding longer time inside Instagram or ROT.
+  - Build user trust through explicit onboarding consent, clear data-quality/staleness states (never disguising missing data as `0h 00m`), local-only storage, and one-tap history export/deletion.
+- **Intended Users:** Android users (primarily Gen Z / young-adult Instagram scrollers) using ROT as a **local/guest companion** on one device (`SRS Section 4.1`). Optional registered accounts and social squads remain gated behind a future backend phase.
+
+---
+
+## B. Phase 1 — Foundation (`PR #1`, `feature/rot-executive-demo`)
+
+> **Preserved Historical Milestone:** Phase 1 upgraded ROT from a static UI prototype (`d771b8e`) into an installable, local-first Android Executive Demo verified on Xiaomi Redmi 11 Prime (`PR #1`).
+
+### Phase 1 Completed Objectives
+1. **Native Android Development Build (`android/`):** Configured `com.rot.brainrotclub` for Expo `58.0.24` / React Native `0.88.1` with New Architecture / Bridgeless & Hermes enabled, plus a portable Windows CMake staging configuration (`${rootDir.toPath().root}rot-cxx`, `-DCMAKE_OBJECT_PATH_MAX=210`) in `android/app/build.gradle`.
+2. **Local-First Device & Custom Display-Name Identity (`Part B`):** Removed all hardcoded `"Rafi"` / `"rafi."` strings (enforced by static lint rules in `scripts/lint.mjs`). Resolved the Android device name (`Redmi 11 Prime`) on first launch via `UsageStatsModule.getDeviceProfileInfo()` and enabled inline/Settings custom name editing (max 28 characters) with `AsyncStorage` persistence and 1-tap revert.
+3. **Structured 9-State `UsageStats` Data Contract (`Part C`):** Implemented `UsageQueryResult` distinguishing `permission_required`, `tracking_paused`, `not_installed`, `no_os_record`, `query_failed`, `stale`, `incomplete`, `zero_usage`, and `ok`. Missing, paused, or failed queries never render `0h 00m` and never overwrite `cachedUsageSummary`.
+4. **Core Phase 1 Gameplay & Controls:** Implemented consent modal (`UsagePermissionModal.tsx`), Usage Access deep-linking (including Xiaomi MIUI `SpecialPermissionInterceptActivity` compatibility), preset daily targets (`30m`–`3h 00m`), Weekend Breathing Room (`+30m`), Brainrot Index, idempotent daily missions/chest/focus break (`1m` / `5m` / `10m`), 6 badges, and `Clear local history`.
+
+### Phase 1 Commit History (`feature/rot-executive-demo`)
 
 | Commit | Summary | Scope |
 | :--- | :--- | :--- |
-| `eb447d8` | `feat(android): add native Android project and UsageStatsModule for Instagram foreground tracking` | Native Android project (`android/`), `PACKAGE_USAGE_STATS` & `<queries>` manifest declarations, `UsageStatsModule.kt`, `UsageStatsPackage.kt`, `MainApplication.kt`. |
-| `2e748cc` | `feat(core): add UsageStats bridge, AsyncStorage persistence, and domain logic` | Typed native bridge (`src/utils/usageStats.ts`), `AsyncStorage` persistence (`src/utils/storage.ts`), domain logic (`src/utils/domainLogic.ts`), shared types (`src/constants/types.ts`). |
-| `a636277` | `feat(ui): wire live Instagram UsageStats, consent modal, focus timer, and settings controls` | `App.tsx`, `UsagePermissionModal.tsx`, `BreakModal.tsx`, `TodayScreen.tsx`, `MissionsScreen.tsx`, `BadgesScreen.tsx`, `SettingsScreen.tsx`, `Icon.tsx`. |
-| `1cd80c3` | `test(ci): add domain logic unit tests, lint checks, CI workflow, and setup docs` | Unit test suite (`src/utils/__tests__/domainLogic.test.ts`), static linter (`scripts/lint.mjs`), GitHub Actions CI (`.github/workflows/ci.yml`), `README.md`. |
-| **Commit #5 (Finalization)** | `feat(demo): add device/custom display name profile, complete UsageStats data states, and finalize SRS report` | Device-name & editable display-name identity system (`Part B`), 9-state `UsageQueryResult` contract & UX (`Part C`), portable CMake staging path (`Part E`), portable screenshots (`docs/screenshots/executive-demo/`), updated `README.md` & `docs/EXECUTIVE_DEMO_REPORT.md`. |
+| `eb447d8` | `feat(android): configure native Android project and UsageStats module` | Native Android project (`android/`), `PACKAGE_USAGE_STATS` & `<queries>` manifest declarations, `UsageStatsModule.kt`, `UsageStatsPackage.kt`, `MainApplication.kt`. |
+| `2e748cc` | `feat(app): implement UsageStats dashboard, consent flow, limits, and local persistence` | Typed native bridge (`src/utils/usageStats.ts`), `AsyncStorage` persistence (`src/utils/storage.ts`), domain logic (`src/utils/domainLogic.ts`), shared types (`src/constants/types.ts`). |
+| `a636277` | `test(ci): add unit tests, static lint checks, GitHub Actions CI, and setup docs` | Unit test suite (`src/utils/__tests__/domainLogic.test.ts`), static linter (`scripts/lint.mjs`), GitHub Actions CI (`.github/workflows/ci.yml`), `README.md`. |
+| `1cd80c3` | `fix(android): configure Windows CMake object path limit and SafeAreaProvider` | Windows CMake path length mitigation and Android safe-area handling. |
+| `6554c81` | `feat(demo): add device/custom display name profile, complete UsageStats data states, and finalize SRS report` | Identity system (`Part B`), 9-state `UsageQueryResult` contract (`Part C`), portable screenshots (`docs/screenshots/executive-demo/`), initial `docs/EXECUTIVE_DEMO_REPORT.md`. |
 
 ---
 
-## 3. Dependency and Android Build Audit
+## C. Phase 2 — MVP Implementation (`PR #2` & `PR #2.1`, `feature/rot-mvp-core`)
 
-All package versions in `package.json`, `node_modules`, and `android/build.gradle` were audited directly to eliminate any documentation discrepancy:
+Phase 2 transforms ROT from an executive demonstration into a complete local-first MVP. Commit `0115d7e` delivered the PR #2 Core MVP engine, and the working-tree `PR #2.1` pass adds real native Android notifications, unread inbox badge persistence, dual PNG card export/sharing, and final UX polish. Only verified codebase features are listed below:
 
-| Component / Package | Declared in `package.json` / Gradle | Installed Version (`node_modules` / Gradle) | Purpose |
+1. **User Profile & Settings (`src/screens/SettingsScreen.tsx`, `src/screens/TodayScreen.tsx`):**
+   - Automatic Android device name discovery (`Settings.Global.DEVICE_NAME` -> `bluetooth_name` -> `Build.MODEL`) with fallback `"ROT User"`.
+   - Inline editing on Today and dedicated **Profile & Display Name** card in Settings (`MAX_DISPLAY_NAME_LENGTH = 28`), custom name persistence, and 1-tap revert to device name.
+   - Custom daily scroll limit presets (`30m`–`3h 00m`), `±5m` stepper, and custom numeric minute entry (`15m`–`720m`), plus **Weekend Breathing Room** (`+30m` on Saturday/Sunday).
+   - **Local Data, Export & History** controls: structured JSON export (`Export / Share JSON` + inline `Preview JSON`, format `rot-user-data-export-v1`) and two-tap `Clear local history` (`clearLocalHistoryState`) preserving consent/profile/settings.
+2. **Screen-Time Tracking & `UsageStats` Integration (`RotUsageTracker.kt`, `UsageStatsModule.kt`, `src/utils/usageStats.ts`):**
+   - Multi-activity foreground interval tracking (`ACTIVITY_RESUMED`, `ACTIVITY_PAUSED`, `ACTIVITY_STOPPED`, screen off / keyguard / shutdown boundaries) for `com.instagram.android` across a rolling 7-day window.
+   - Deduplicated `INTERVAL_DAILY` bucket fallback (`maxOf` per day) to guard against MIUI/HyperOS duplicate bucket inflation, tagged `status: 'incomplete'` when granular events are unavailable.
+   - 9-state `UsageQueryResult` enforcement and 30-minute staleness threshold (`STALE_THRESHOLD_MS`).
+3. **Brainrot Index, Breakdown & Mood Logging (`src/screens/TodayScreen.tsx`, `src/utils/domainLogic.ts`):**
+   - Calculates `0–99` Brainrot Index (`calculateBrainrotIndex`) from usage-vs-target ratio minus mission and focus-break bonuses, with an expandable **Breakdown** panel showing exact base score, mission bonus, focus break bonus, and summary text.
+   - Interactive **Mood Check-in** drawer with 4 mood presets (`balanced`, `curious`, `cooked`, `offline_reset`), optional 120-character note (`MAX_MOOD_NOTE_LENGTH`), and recent mood check-in history (`moodLogsByDate`).
+4. **Missions & Weekly Quests (`src/screens/MissionsScreen.tsx`, `src/constants/data.ts`, `src/utils/domainLogic.ts`):**
+   - 4 daily healthy-habit missions (`touch-grass`, `set-scroll-limit`, `brain-check-in`, and usage-linked `stay-under-target` which auto-verifies when verified daily Instagram usage stays within the effective daily limit).
+   - 3 auto-tracked **Weekly Quests** (`balanced-week`, `focus-master`, `under-target-week`) with progress bars and claimable XP rewards (`+90`, `+80`, `+110 XP`).
+5. **XP System & Brain Bank Transaction Ledger (`App.tsx`, `src/screens/MissionsScreen.tsx`, `src/utils/domainLogic.ts`):**
+   - Deterministic, idempotent XP awards via `claimedXpEvents` (`mission:<date>:<id>`, `chest:<date>`, `break:<date>:<session>`, `weekly-quest:<week>:<id>`, `streak-recovery:<date>`).
+   - Chronological `xpLedger` with consistency verification (`verifyXpLedgerConsistency`, displayed as `Verified · <N> XP` in **Brain Bank XP Ledger**).
+   - Interactive top-bar XP pill (`xpPill` in `App.tsx`) that switches to `Missions` and auto-scrolls directly to `Brain Bank XP Ledger`.
+6. **Player Levels, Streaks, Grace Days, Badges & Leaderboard Preview:**
+   - **Player Levels (`calculatePlayerLevel`):** Progressive 100-XP-step levels and rank titles (*Newbie Scroller* through *Offline Legend*).
+   - **Streak & Grace-Day Engine (`evaluateStreakState`, `recoverStreakState`):** Evaluates missed/completed days across timezone-safe local date keys (`yyyy-MM-dd`), grants 1 automatic **Grace Day** per week (`maxGraceDaysPerWeek`), never punishes missing `UsageStats` days (`BT-07`), and supports streak recovery (`+25 XP`).
+   - **Badges (`getBadges` in `src/constants/data.ts`, `BadgesScreen.tsx`):** 6 badges (`first-flight`, `limit-setter`, `grass-toucher`, `brain-check`, `soft-launcher`, `offline-icon`) with earned timestamps (`unlockedAt`) and celebration modal/audio.
+   - **Leaderboard (`LeaderboardScreen.tsx`):** Local `Friends`, `Squad`, and `Campus` preview tabs merging the user's live display name, handle, initials, and XP with dynamic XP sorting and friendly high-five toasts (local demo data).
+7. **Focus Breaks & Rewards (`src/components/BreakModal.tsx`, `src/components/DailyChestCard.tsx`, `src/utils/sound.ts`):**
+   - Non-blocking `1m` (demo), `5m`, and `10m` offline Focus Break timer (`completeFocusBreakState`), awarding `+30 XP`, completing *"Touch some grass"*, unlocking `Offline Icon`, and recording duration-specific ledger entries.
+   - Daily Reward Chest awarding `+50 XP` and a daily cosmetic item label (`Soft Reset sticker`, `Golden brain pin`, `Offline icon`, `Tiny victory badge`) with offline WAV confirmation jingles via `expo-audio`.
+8. **Notification System, Notification Center & Persistent Unread Badge:**
+   - Dedicated Android notification channels (`rot_wellbeing_nudges` and `rot_scheduled_reminders`) managed by `RotNotificationHelper.kt`.
+   - `RotNotificationPrefs.kt` persists up to 150 delivered notifications in native `SharedPreferences` (`rot_notification_prefs`) with ID deduplication (`hasNotificationId`) so foreground, `WorkManager`, and `AlarmManager` notifications never double-count.
+   - Top-bar bell displays a red badge (`formatUnreadBadgeCount`: hidden at `0`, exact count `1–99`, `99+` above `99`), syncs on app launch/resume, and marks notifications read upon opening `NotificationCenterModal.tsx` (highlighting newly read items with a `NEW` pill).
+9. **Background Scheduling, Quiet Hours, Weekend Rules & Reboot Recovery:**
+   - **WorkManager (`RotUsageCheckWorker.kt`):** Runs periodic 15-minute background usage checks (`rot_usage_periodic_check`) to evaluate 80% / 100% daily budget nudges even when the UI is closed.
+   - **AlarmManager (`RotNotificationScheduler.kt`, `RotAlarmReceiver`):** Schedules daily evening mission reminders and streak protection reminders at user-configurable hour/minute values.
+   - **Quiet Hours & Weekend Adjustments:** Configurable quiet window (`quietStartHour`–`quietEndHour`, overnight wrap supported, default `22:00–08:00`) suppresses non-test notifications; `weekendBreathingRoom` adds `+30m` to native threshold calculations on Saturday/Sunday (`effectiveDailyLimitMinutes`).
+   - **Reboot & Timezone Recovery (`RotBootReceiver`):** Registered in `AndroidManifest.xml` for `BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`, `TIME_SET`, and `TIMEZONE_CHANGED` to reschedule periodic work and daily alarms.
+10. **Dual Shareable Cards, Swipe Modal, PNG Export, Private Mode & Native Sharing:**
+    - **Archetype Collector Card (`ArchetypeCardPoster`):** Renders dynamic archetype (`Soft Launcher`, `Grass Toucher`, `Night Owl`, `Scroll Explorer`), `RotMascot` SVG/view illustration, player level progress, Brainrot Index, streak, and XP.
+    - **Weekly Achievement Card (`WeeklyAchievementPoster`):** Summarizes `buildWeeklyAchievementSummary` (weekly XP earned, missions completed, weekly quests, streak, badges) with an honest zero-progress empty state.
+    - **Main Browsing & Swipe Modal (`BrainrotCardScreen.tsx`, `CardSelectionModal.tsx`):** Main screen focuses on horizontal card browsing (`Archetype` <-> `Weekly`), Evolution Path, daily wisdom, and a single `Save or Share` button. Opening `CardSelectionModal` freezes background card gestures while allowing smooth spring-animated swiping/tapping between tilted card previews inside the modal.
+    - **Feed `4:5` & Story `9:16` PNG Generation (`react-native-view-shot` + `RotCardMediaModule.kt`):** Captures hidden high-resolution card views and normalizes exact **`1080x1350`** (Feed) and **`1080x1920`** (Story) PNGs.
+    - **Private Mode & Stats Redaction:** When Settings `Private mode` is ON, `CardSelectionModal` exposes a stats visibility toggle; hiding stats replaces personal metrics with `PRIVATE EDITION` / `PRIVATE CARD · PERSONAL STATS HIDDEN` (Archetype) and `PRIVATE WEEKLY CHECK-IN` / `PRIVATE WEEKLY CARD · STATS HIDDEN BY USER` (Weekly). When Private Mode is OFF, the modal toggle stays hidden while keeping `Save PNG` and `Share` actions consistent.
+    - **Android Gallery Save, Duplicate Prevention & Native Share Sheet:** Saves PNGs to `Pictures/ROT` via `MediaStore` (API 29+) or `MediaScannerConnection` (API 24–28), deduplicates repeated saves of the same card/format/date/stats hash (`saved_uri_<key>` + `findExistingGalleryUriByName`), and shares via `FileProvider` (`${applicationId}.fileprovider`) and `Intent.createChooser` (`Share ROT Card`).
+
+---
+
+## D. Application Architecture
+
+ROT uses a **local-first React Native + Native Android Kotlin bridge** architecture with zero backend dependencies:
+
+- **React Native Frontend (`App.tsx`, `src/screens/*`, `src/components/*`):**
+  - **Navigation & State Management:** Single-root `App.tsx` manages tab navigation (`Today`, `Missions`, `Badges`, `Leaderboard`, `Card`, `Settings`) and centralized `PersistedAppState` hydrated from `AsyncStorage` (`@rot_executive_demo_state_v1` in `src/utils/storage.ts`).
+  - **Pure Domain Layer (`src/utils/domainLogic.ts`, `src/constants/types.ts`, `src/constants/data.ts`):** Pure TypeScript functions handle display-name resolution, 9-state `UsageDisplayState` mapping, Brainrot Index math, idempotent XP ledger updates, streak/grace-day evaluation, weekly quests, notification evaluation, player level calculation, and JSON export serialization.
+- **Android Native Kotlin Modules (`android/app/src/main/java/com/rot/brainrotclub/`):**
+  - Registered via `UsageStatsPackage.kt` inside `MainApplication.kt`:
+    - `UsageStatsModule.kt` + `RotUsageTracker.kt`: Queries `UsageStatsManager`, checks `AppOpsManager` `OPSTR_GET_USAGE_STATS`, retrieves device profile info, manages `RotNotificationPrefs`, triggers `RotNotificationScheduler`, posts test/immediate notifications, and opens Android Usage Access / Notification Settings.
+    - `RotCardMediaModule.kt`: Validates/normalizes off-screen `react-native-view-shot` captures into `1080x1350` or `1080x1920` PNGs, saves to Android Gallery (`MediaStore`) with duplicate prevention, and launches the native Android Share Sheet via `FileProvider`.
+    - `RotNotificationHelper.kt`, `RotNotificationPrefs.kt`, `RotNotificationScheduler.kt`, `RotNotificationReceivers.kt`, `RotUsageCheckWorker.kt`: Handle notification channels, persistent unread inbox storage, `WorkManager` periodic usage checks, `AlarmManager` daily reminders, and boot/time-change rescheduling.
+- **JavaScript-to-Native Bridge (`src/utils/usageStats.ts`):**
+  - Wraps `NativeModules.UsageStatsModule` and `NativeModules.RotCardMedia` with typed promises, timeout guards (`6000ms` query timeout), notification config syncing (`syncNativeNotificationConfig`), inbox reads/mark-read (`getNativeNotificationInbox`, `markAllNativeNotificationsRead`), and card export (`prepareAndVerifyCardPng`, `saveCardPngToGallery`, `shareCardPng`).
+- **Notification Persistence & Synchronization:**
+  - Native `RotNotificationPrefs` is the single source of truth for delivered notification history and unread counts. On mount and `AppState` foreground transitions (`App.tsx`), JS syncs user notification settings/limit down to native `SharedPreferences` and pulls `NotificationInboxSnapshot` back up to keep the bell badge synchronized with background notifications.
+
+---
+
+## E. Technology Stack
+
+All versions below are verified directly from `package.json`, `android/gradle.properties`, `android/build.gradle`, and `android/app/build.gradle`:
+
+| Layer | Technology / Dependency | Verified Version / Configuration |
+| :--- | :--- | :--- |
+| **App Framework** | Expo SDK / React Native / React | `expo` `~58.0.24`, `react-native` `0.88.1`, `react` `19.3.0` |
+| **Language & Tooling** | TypeScript / Babel | `typescript` `~6.0.3`, `babel-preset-expo` `~58.0.24`, `@types/react` `~19.3.0` |
+| **Local Storage** | `@react-native-async-storage/async-storage` | `2.2.0` (plus Android native `SharedPreferences` for notifications/media dedup) |
+| **UI, Icons & Media** | `react-native-svg`, `@expo/vector-icons`, `expo-linear-gradient`, `react-native-safe-area-context`, `react-native-view-shot`, `expo-audio`, `expo-font`, `expo-asset`, `expo-status-bar` | `react-native-svg` `15.16.0`, `@expo/vector-icons` `~15.0.2`, `expo-linear-gradient` `~58.0.4`, `react-native-safe-area-context` `~5.11.1`, `react-native-view-shot` `^6.1.1`, `expo-audio` `~58.0.12`, `expo-font` `~58.0.12`, `expo-asset` `~58.0.21`, `expo-status-bar` `~58.0.5` |
+| **Android Native** | Kotlin / WorkManager / AndroidX Core | `androidx.work:work-runtime-ktx:2.10.0`, `FileProvider`, `UsageStatsManager`, `AlarmManager`, `MediaStore` |
+| **Build & Runtime** | Android Gradle Plugin / Hermes / New Architecture | `newArchEnabled=true`, `hermesEnabled=true`, `edgeToEdgeEnabled=true`, `reactNativeArchitectures=arm64-v8a` |
+
+---
+
+## F. Verification and Testing
+
+### 1. Automated Verification (Latest Run on `feature/rot-mvp-core` + `PR #2.1`)
+
+| Check | Command | Result | Scope |
 | :--- | :--- | :--- | :--- |
-| **`expo`** | `^58.0.0` | **`58.0.24`** | Expo SDK runtime & module autolinking |
-| **`react-native`** | `0.88.1` | **`0.88.1`** | Core React Native Android runtime (New Architecture / Bridgeless enabled) |
-| **`react`** | `19.3.0` | **`19.3.0`** | React UI library |
-| **`typescript`** | `~6.0.2` | **`6.0.3`** | Static type checking (`tsc --noEmit`) |
-| **`@react-native-async-storage/async-storage`** | `^2.2.0` | **`2.2.0`** | Local-first JSON state persistence (`@rot_executive_demo_state_v1`) |
-| **`react-native-safe-area-context`** | `~5.11.1` | **`5.11.1`** | Android status bar & MIUI gesture navigation bar safe-area insets |
-| **`react-native-svg`** | `15.16.0` | **`15.16.0`** | Custom vector icons (`src/components/Icon.tsx`) |
-| **Kotlin Gradle Plugin** | `2.2.10` | **`2.2.10`** | Compiles `MainActivity.kt`, `MainApplication.kt`, `UsageStatsModule.kt`, `UsageStatsPackage.kt` |
-| **Android SDK Versions** | `compileSdk 37`, `targetSdk 36`, `minSdk 24` | **`37` / `36` / `24`** | Android 7.0 – Android 16+ compatibility (`buildToolsVersion = 37.0.0`) |
-| **Android NDK** | `27.1.12297006` | **`27.1.12297006`** | Native C++/CMake build toolchain |
+| **TypeScript Typecheck** | `npm run typecheck` (`tsc --noEmit`) | **PASS** (`0` errors) | Full TypeScript codebase |
+| **Static Lint** | `npm run lint` (`node scripts/lint.mjs`) | **PASS** (`0` errors) | `27` TypeScript/React Native files (merge markers, `debugger`, banned `"on Instagram Reels"` claim, hardcoded `"Rafi"` check) |
+| **Unit Tests** | `npm test` (`node scripts/run-tests.mjs`) | **PASS** (`15 passed, 0 failed`) | Display-name resolution, 9-state `UsageQueryResult`, daily limit progress, XP/mission/chest idempotency, focus breaks, streak & grace-day engine, weekly quests, mood logs, Brainrot Index breakdown, quiet hours & notification evaluation, player levels, export filenames, weekly summaries, `0`/`99+` badge formatting |
+| **Android Debug Build** | `cd android && .\gradlew.bat :app:assembleDebug --no-daemon` | **PASS** (`BUILD SUCCESSFUL in 25s`) | Compiles native Kotlin modules, WorkManager, ViewShot, and debug APK |
 
-### Windows CMake Path Portability (`android/app/build.gradle`)
-- In `android/app/build.gradle`, the Windows CMake staging directory was updated from a machine-specific path to `buildStagingDirectory file("${rootDir.toPath().root}rot-cxx")` alongside `-DCMAKE_OBJECT_PATH_MAX=210`, ensuring portable builds on any Windows drive without exceeding the 260-character Ninja object path limit.
+### 2. Physical-Device QA (Xiaomi Redmi 11 Prime `22071219AI`, Android 14, Wireless ADB)
 
----
-
-## 4. User Identity and Display-Name System (`Part B`)
-
-All hardcoded occurrences of `"Rafi"` and `"@rafi.rot"` have been removed from [src/constants/data.ts](../src/constants/data.ts) and [src/screens/TodayScreen.tsx](../src/screens/TodayScreen.tsx), and a static lint rule in [scripts/lint.mjs](../scripts/lint.mjs) now fails CI if `\bRafi\b` or `\brafi\.` ever reappears.
-
-### Identity Resolution Order (`resolveEffectiveDisplayName` in [src/utils/domainLogic.ts](../src/utils/domainLogic.ts))
-1. **User-Defined Custom Name (`customDisplayName`):**
-   - Sanitized via `sanitizeDisplayName(rawInput)`: trims leading/trailing whitespace, collapses internal whitespace runs, rejects blank strings, and caps length at **`28` characters** (`MAX_DISPLAY_NAME_LENGTH = 28`).
-   - Persisted inside `PersistedAppState` in `AsyncStorage` (`@rot_executive_demo_state_v1`).
-2. **Android Device Default (`deviceDefaultName`):**
-   - Queried on launch via `UsageStatsModule.getDeviceProfileInfo()` in [UsageStatsModule.kt](../android/app/src/main/java/com/rot/brainrotclub/UsageStatsModule.kt):
-     1. `Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME)`
-     2. `Settings.Secure.getString(contentResolver, "bluetooth_name")`
-     3. `Build.MODEL` / `Build.MANUFACTURER` (on the connected Xiaomi phone, resolves to **`Redmi 11 Prime`**).
-   - Technical note: Android OEMs differ on whether `Settings.Global.DEVICE_NAME` exposes the owner's custom device nickname vs. the marketing model name without Bluetooth/nearby permissions. ROT uses the best unprivileged OS value and provides a 1-tap manual edit control on both Today and Settings.
-3. **Final Fallback:**
-   - If neither a custom name nor an OS device name is available, falls back to **`"ROT User"`** (`@rot.user`, initials `RU`).
-
-### Where Identity Appears
-- **Today Screen ([src/screens/TodayScreen.tsx](../src/screens/TodayScreen.tsx)):** Dynamic greeting (`"Good evening, Redmi 11 Prime."` -> `"Good evening, Pramit."`) with an inline **`Edit`** chip, a 1-tap clear (`×`) button, **`Save`**, and **`Reset`**.
-- **Settings Screen ([src/screens/SettingsScreen.tsx](../src/screens/SettingsScreen.tsx)):** Dedicated **`PROFILE & DISPLAY NAME`** card showing active display name, device fallback name, text input with clear (`×`) and **`Save`**, and a **`Revert to device name (Redmi 11 Prime)`** button when a custom name is active.
-- **Brainrot Card ([src/screens/BrainrotCardScreen.tsx](../src/screens/BrainrotCardScreen.tsx)):** Displays the user's display name on the shareable card header (`ROT. BRAINROT CLUB · PRAMIT`), footer (`PRAMIT · MEMBER SINCE 2026 · 334 XP · PRIVATE`), and user chip.
-- **Leaderboard ([src/screens/LeaderboardScreen.tsx](../src/screens/LeaderboardScreen.tsx)):** Displays the user's current display name, generated handle (`@pramit.rot`), and initials (`PR`) on the `isYou` row.
+- **Notification Badge & Cold-Restart Persistence (`PASS`):**
+  - Verified bell badge hidden at `0` unread (`"All caught up"` empty inbox); sending 1st and 2nd test nudges updated badge to `"1"` then `"2"`.
+  - Cold force-stop (`am force-stop com.rot.brainrotclub`) and relaunch preserved badge `"2"`.
+  - Opening `NotificationCenterModal` displayed unread items with `NEW` and `TEST NUDGE` pills and cleared the bell badge to hidden (`0`), persisting across a second cold restart.
+- **Interactive Top-Bar XP Indicator (`PASS`):**
+  - Tapped `664 XP >` pill from `Today` -> navigated to `Missions` and auto-scrolled directly to `TRANSACTION HISTORY / Brain Bank XP Ledger` (`Verified · 664 XP`, rows summing to `664 XP`).
+- **Background Card Carousel Freeze (`PASS`):**
+  - Opening `CardSelectionModal` froze background preview interactions; tapping/swiping between `Archetype` and `Weekly Achievement` moved only the modal cards; `KEYCODE_BACK` closed the modal cleanly and restored main-screen horizontal swipe.
+- **All 4 Card PNG Exports, Share Sheet, Duplicate Prevention & Private Mode (`PASS`):**
+  - Pulled exported files from `/sdcard/Pictures/ROT/` and verified exact PNG pixel dimensions:
+    1. `ROT_Archetype_Pramit_20261115.png` (`Save PNG`): **`1080x1350`** (`197,185` bytes).
+    2. `ROT_Archetype_Pramit_20261115_Story.png` (`Save PNG`): **`1080x1920`** (`211,405` bytes).
+    3. `ROT_Weekly_Achievement_Pramit_20261115.png` (`Share`): **`1080x1350`** (`280,439` bytes) and launched native Android Share Sheet (`MiuiChooserActivity`, `"Share ROT Card"`).
+    4. `ROT_Weekly_Achievement_Pramit_20261115_Story.png` (`Save PNG`, Private Mode ON + stats hidden): **`1080x1920`** (`264,454` bytes vs `293,680` bytes with stats shown), confirming zero XP/streak leakage.
+  - Repeated `Save PNG` verified duplicate-save prevention (1 file on disk in `Pictures/ROT`).
+  - Verified Private stats toggle inside modal is hidden when Private Mode is OFF while `Save PNG` / `Share` labels stay consistent.
+- **Cross-Tab Regression, Schedulers & Logcat (`PASS`):**
+  - Spot-checked `Today` (`0h 03m`, `UsageStats · usage_events`, `1 day streak`, `1/1 grace day left`, `99/100`), `Missions`, `Badges` (`6/6`, `100%`), `Board` (`Gold-ish league`, `Rank 1 of 5`), `Card`, and `Settings` (`Pramit`, fallback `Redmi 11 Prime`, `90m`, `Notifications: Allowed`, `Nudge channel: On`, `Quiet hours active`).
+  - `dumpsys alarm` confirmed `ACTION_STREAK_REMINDER` and `ACTION_EVENING_REMINDER` registered; `dumpsys jobscheduler` confirmed `SystemJobService#309` (`RUNNABLE`, `1x successful_finish`).
+  - App logcat (`PID 29786`) and Metro (`shell-25`) showed zero runtime JS or native crashes/errors.
 
 ---
 
-## 5. `UsageStats` Architecture and 9-State Data Contract (`Part C`)
+## G. Known Limitations
 
-### Native Aggregation (`UsageStatsModule.kt`)
-- **Permission Check:** Evaluates `AppOpsManager.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)`. If `MODE_DEFAULT`, falls back to a probe query against `UsageStatsManager`.
-- **Foreground Interval Aggregation (`computeForegroundFromEvents`):**
-  - Queries `UsageStatsManager.queryEvents(startMs, endMs)` and filters for `packageName == "com.instagram.android"`.
-  - Tracks active foreground classes across internal activity transitions (`InstagramMainActivity` -> `ModalActivity` -> `TransparentModalActivity`). Foreground time starts when the first Instagram activity enters `ACTIVITY_RESUMED` (1) and ends only when the last active Instagram activity emits `ACTIVITY_PAUSED` (2) or `ACTIVITY_STOPPED` (23), or when a system `SCREEN_NON_INTERACTIVE` (16) / `KEYGUARD_SHOWN` (18) / `DEVICE_SHUTDOWN` (26) event occurs.
-- **Daily Bucket Fallback (`computeForegroundFromDailyStats`):**
-  - If `queryEvents` returns 0ms for a window, checks `queryUsageStats(INTERVAL_DAILY, ...)`. To prevent OEM duplicate-bucket inflation on Xiaomi MIUI, takes the maximum single bucket duration (`maxOf`) per day window and marks today's result as `status = "incomplete"` (`isComplete = false`) when only coarse bucket data is available.
+### Unverified Runtime Scenarios (`NOT VERIFIED`)
+1. **Unattended Wall-Clock `AlarmManager` Firing:** Scheduled alarms (`ACTION_STREAK_REMINDER`, `ACTION_EVENING_REMINDER`) were confirmed registered in `dumpsys alarm`, but waiting across real wall-clock evening/streak hours for unattended OS delivery has **not** been executed live.
+2. **Physical-Device Reboot Recovery:** `RotBootReceiver` (`BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`, `TIME_SET`, `TIMEZONE_CHANGED`) is declared in `AndroidManifest.xml` and compiled, but an actual device reboot was **not** performed during wireless ADB QA.
+3. **100+ Real Notifications & `99+` Badge Overflow On-Device:** `formatUnreadBadgeCount` `99+` saturation is verified by unit tests (`domainLogic.test.ts`), while on-device QA tested `0`, `1`, and `2` real notifications (not 100+ live OS notifications).
+4. **Standalone Release APK Generation & Distribution:** Verification used the debug build (`app-debug.apk`) paired with Metro; a standalone bundled/signed release APK has **not** been built or tested on-device in this milestone.
 
-### Structured Data Contract (`UsageQueryResult` in [src/constants/types.ts](../src/constants/types.ts))
-
-```ts
-export interface UsageQueryResult {
-  status: UsageDataStatus; // 'permission_required' | 'tracking_paused' | 'not_installed' | 'no_os_record' | 'query_failed' | 'stale' | 'incomplete' | 'zero_usage' | 'ok'
-  estimatedMinutes: number | null;
-  lastUpdatedAt: number | null;
-  source: 'usage_events' | 'daily_stats_fallback' | 'none';
-  isComplete: boolean | 'unknown';
-  errorCode?: string | null;
-}
-```
-
-### Separation of Latest Query vs. Last Verified Estimate (`cachedUsageSummary`)
-- `PersistedAppState` stores `usageSummary` (latest query result) and `cachedUsageSummary` (last verified `ok` / `zero_usage` / `incomplete` estimate) separately via `selectCachedSummaryToPersist` in [src/utils/domainLogic.ts](../src/utils/domainLogic.ts).
-- A failed query, permission revocation, or tracking pause **never** overwrites `cachedUsageSummary` with zero or erases historical data.
-
-### All 9 Required Data States & Exact UX Strings
-
-| State (`UsageDataStatus`) | Condition | Primary Card Headline | Exact Message Displayed (`statusDetail`) | Action Button | Numeric Value Shown? |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`permission_required`** | Consent not accepted or Android `GET_USAGE_STATS` denied/revoked | `Access needed` | `"ROT needs Usage Access to estimate your Instagram screen time."` (plus revocation warning if revoked while open) | `Grant permission` | **No** (Never `0h 00m`) |
-| **`tracking_paused`** | User toggled `trackingEnabled = false` in Settings | `Tracking paused` | `"Tracking is paused. Your previous saved progress is preserved."` | `Resume tracking` | **No** |
-| **`not_installed`** | `PackageManager.getPackageInfo("com.instagram.android")` throws `NameNotFoundException` | `No IG app` | `"Instagram isn't installed on this device."` | `Refresh` | **No** |
-| **`query_failed`** | Native exception, null summary, or 6s timeout (`QUERY_TIMEOUT`) | `Query failed` | `"We couldn't retrieve your usage data. Your previous saved data hasn't been deleted."` | `Try again` | Shows cached estimate **only** with explicit warning banner & timestamp if available; never `0h 00m` |
-| **`no_os_record`** | Permission granted & IG installed, but OS returned 0 events and 0 daily buckets | `No OS record` | `"No usage record is available yet. Open Instagram and check again."` | `Refresh` | **No** (Empty query is not proof of zero usage) |
-| **`stale`** | `now - queriedAtEpochMs > 30 minutes` (`STALE_THRESHOLD_MS`) | `<Xh Ym>` (with `Stale · ...` badge) | `"estimated Instagram foreground time"` + Warning: `"Showing last saved estimate from <time>. Refresh to verify current usage."` | `Refresh` | Yes, with explicit stale warning & timestamp |
-| **`incomplete`** | OS provided coarse `INTERVAL_DAILY` bucket without granular `UsageEvents` (`isComplete === false`) | `<Xh Ym>` (with `Partial data` badge) | `"estimated Instagram foreground time"` + Warning: `"OS returned coarse daily bucket data without granular activity events (updated <time>)."` | `Refresh` | Yes, with explicit incomplete warning & timestamp |
-| **`zero_usage`** | Query succeeded, OS has active usage records (`source !== 'none'`), and today's foreground time is `0m` | `0h 00m` | `"estimated Instagram foreground time (verified zero usage today)"` | Header refresh icon | Yes (`0h 00m` only when verified) |
-| **`ok`** | Query succeeded via `usage_events` with `> 0m` foreground usage | `<Xh Ym>` (e.g., `1h 42m`) | `"estimated Instagram foreground time"` | Header refresh icon | Yes (`1h 42m`) |
+### Technical & Platform Constraints (Preserved from Phase 1 & SRS)
+- **App-Level Foreground Granularity Only:** `UsageStatsManager` reports foreground activity events for `com.instagram.android`, not internal Reels views; ROT labels all numbers as estimated foreground time.
+- **OS `UsageEvents` Retention (~7 Days):** Android prunes raw `UsageEvents` after roughly a week, leaving older days reliant on local cached summaries or coarse buckets.
+- **OEM / MIUI Quirk Mitigation:** MIUI `INTERVAL_DAILY` queries can return duplicate buckets (mitigated via `maxOf` deduplication and `incomplete` labeling); OEM battery optimization can still delay background `WorkManager`/`AlarmManager` delivery.
+- **Local-Only Squads:** Leaderboard rankings remain local demo data without backend accounts or cloud sync.
 
 ---
 
-## 6. Physical Device Verification (Xiaomi Redmi 11 Prime, Android 14)
+## H. Remaining Work and Future Roadmap
 
-All core flows were executed and verified on the connected **Xiaomi Redmi 11 Prime** (`adb-45cyuwei5p89fylr-3xJxrN._adb-tls-connect._tcp`, Android 14 / API 34):
-
-1. **Device Name Detection on First Launch:**
-   - `UsageStatsModule.getDeviceProfileInfo()` returned `"Redmi 11 Prime"`.
-   - The Today screen rendered **`"Good evening, Redmi 11 Prime."`** with no `"Rafi"` anywhere in the UI.
-2. **Custom Display-Name Editing, Persistence & Reset:**
-   - Tapped **`Edit`** beside the greeting on the Today screen, cleared `"Redmi 11 Prime"` using the Clear (`×`) button, entered **`"Pramit"`**, and tapped **`Save`**.
-   - Verified the Today greeting immediately updated to **`"Good evening, Pramit."`**, the Brainrot Card updated to **`"ROT. BRAINROT CLUB · PRAMIT"`**, and Settings showed **`"Display name: Pramit"`** with **`"Custom name active · Device fallback: Redmi 11 Prime"`** and **`"Revert to device name (Redmi 11 Prime)"`**.
-   - Force-stopped `com.rot.brainrotclub` (`adb shell am force-stop com.rot.brainrotclub`) and relaunched it: **`"Good evening, Pramit."`**, **`334 XP`**, **`1h 42m`**, and **`Claimed today`** all persisted across the cold restart.
-3. **Live Instagram Foreground Estimate & Daily Limit:**
-   - Queried live `UsageStatsManager` data for `com.instagram.android`: **`1h 42m`** (`22 intervals today`, `usage_events`, `status: ok`).
-   - Against the `1h 30m` daily target, accurately calculated **`12 min over target`**, displayed the non-shaming gentle nudge banner, and computed Brainrot Index **`42/100`** (`Over target`).
-4. **Permission Required, MIUI Intercept & Tracking Paused States:**
-   - Toggled tracking off in Settings -> Today card immediately showed **`"Tracking paused"`** (`"Tracking is paused. Your previous saved progress is preserved."`) with action **`"Resume tracking"`**.
-   - Revoked `GET_USAGE_STATS` via `adb shell appops set com.rot.brainrotclub GET_USAGE_STATS ignore` -> Today card immediately showed **`"Access needed"`** (`"ROT needs Usage Access to estimate your Instagram screen time."`) with action **`"Grant permission"`**, never `0h 00m`.
-   - Tapped **`System Usage Access Settings`** -> verified Xiaomi MIUI's `SpecialPermissionInterceptActivity` 10-second security warning flow.
-   - Restored `GET_USAGE_STATS allow` and tracking enabled -> Today screen returned to **`1h 42m`** verified estimate.
+1. **MVP-Completed Functionality (Done on `feature/rot-mvp-core`):**
+   - Consent & Usage Access onboarding, 9-state `UsageStats` contract, device/custom display name, custom limits + Weekend Breathing Room, Brainrot Index + breakdown, mood check-in log, daily + usage-linked missions, weekly quests, streak + grace-day + recovery engine, Brain Bank XP ledger + interactive XP pill, player levels, 6 badges, focus break timer + offline audio, persistent notification inbox + unread badge, `WorkManager`/`AlarmManager` scheduling + quiet hours, JSON export + history deletion, dual shareable cards (`Archetype` + `Weekly Achievement`), `1080x1350`/`1080x1920` PNG export, Private Mode redaction, Gallery deduplication, and native Share Sheet.
+2. **Outstanding Verification (Before Merge / Beta):**
+   - Real-time or accelerated verification of `RotAlarmReceiver` wall-clock firing, physical device reboot persistence (`RotBootReceiver`), `100+` notification badge overflow rendering on-device, and standalone release APK installation/testing without Metro.
+3. **Production-Readiness Work (Required Before Public Play Release):**
+   - Production release keystore configuration and Play App Signing.
+   - Google Play Console `PACKAGE_USAGE_STATS` prominent-disclosure & declaration review, privacy policy URL, and battery/accessibility audit (`AT-09` TalkBack & font-scaling pass).
+   - Multi-device OEM compatibility matrix testing beyond Redmi 11 Prime.
+4. **Future Enhancements & Original Planned Features Not Yet Implemented:**
+   - **Original `PR #3` / MVP Polish Items Still Partial:** Explicit `"Local Demo Squad"` disclaimer banner on `LeaderboardScreen.tsx`; multi-tier daily chest reward table & equippable cosmetic inventory (`FR-015`).
+   - **SRS Phase 1/2 Concepts Not Yet Built:** User toggle to disable/reset mascot (`FR-011` detail) and mute/report Daily Roast templates (`FR-012` detail), dedicated Black Box estimate-change log (`FR-026`), Braincell Graveyard view (`FR-023`), unified Museum gallery (`FR-029`), Offline Domino chain (`FR-022`), monthly/annual Wrapped (`FR-016`), and What If Simulator (`FR-030`).
+   - **Product-Owner Gated / Post-MVP Social & Deferred Scope:** Backend accounts & sync, Invite-only Friend Squads (`FR-018`), 24-Hour Friend Challenges (`FR-019`), Brainrot Weather (`FR-025`), Contagion Map (`FR-027` deferred/P2), Blackout campaigns (`FR-028`), and explicitly deferred/rejected concepts (`FR-020` Anonymous Roast Battle, `FR-031` Prediction Market, `AccessibilityService` Reel counting).
 
 ---
 
-## 7. Automated Test, Lint, and Build Results
+## I. Current Project Status
 
-All automated checks were executed and passed with zero errors:
-
-### TypeScript Typecheck (`npm run typecheck`)
-```text
-> rot-mobile@1.0.0 typecheck
-> tsc --noEmit
-(Exit code: 0)
-```
-
-### Static Linter (`npm run lint`)
-```text
-> rot-mobile@1.0.0 lint
-> node scripts/lint.mjs
-
-Lint passed across 23 TypeScript/React Native files.
-(Exit code: 0)
-```
-
-### Unit Tests (`npm test`)
-```text
-> rot-mobile@1.0.0 test
-> node scripts/run-tests.mjs
-
-✔ Part B: Resolves device-name default, custom display name, blank-name validation, max length, and fallback
-✔ Part C (1-4): Distinguishes permission missing, tracking paused, Instagram not installed, and empty OS record without ever showing 0h 00m
-✔ Part C (5-9): Distinguishes successful zero usage, non-zero usage, query failure, stale/incomplete data, and permission revocation while running
-✔ AT-04 & AT-05: Computes daily limit progress, remaining time, and gentle nudges accurately
-✔ AT-06: Guarantees mission completion and daily chest XP rewards are strictly idempotent
-✔ FR-009 & FR-021: Completes focus break, awards XP once per session, and unlocks Offline Icon badge
-✔ AT-08 & Cold-Restart Serialization: Preserves custom profile, consent, and XP across JSON serialization and clears local history cleanly
-✔ FR-007: Computes Brainrot Index honestly when data is present vs. missing
-
-Tests summary: 8 passed, 0 failed (8 total).
-(Exit code: 0)
-```
-
-### Android Gradle Debug Build (`cd android && .\gradlew.bat :app:assembleDebug --no-daemon`)
-```text
-> Task :app:buildCMakeDebug[arm64-v8a]
-> Task :app:mergeDebugNativeLibs
-> Task :app:packageDebug
-> Task :app:assembleDebug
-
-BUILD SUCCESSFUL in 34s
-238 actionable tasks: 13 executed, 225 up-to-date
-(Exit code: 0)
-```
+- **MVP Implementation (`PR #2` + `PR #2.1`):** **Code complete** on branch `feature/rot-mvp-core`.
+- **Verification:** All automated checks (`typecheck`, `lint`, `15/15` unit tests, `:app:assembleDebug`) and physical-device QA flows on Redmi 11 Prime (barring the 4 explicitly listed `NOT VERIFIED` runtime items in Section G) are complete.
+- **Git / PR State:** Uncommitted `PR #2.1` working-tree changes (17 modified files + 12 new native/RN source files) are audited and **awaiting your explicit Git commit & push workflow** to `origin/feature/rot-mvp-core`. Do not stage `.idea/vcs.xml` or `Software Requirements Specification and Project Plan.pdf`.
 
 ---
 
-## 8. Corrected SRS Requirements Traceability Matrix (`Part D`)
+## J. SRS Cross-Check & Requirement-Status Matrix
 
-Cross-referenced directly against `Software Requirements Specification and Project Plan.pdf` (Sections 5, 6, 7, and 15). No requirement IDs or titles have been invented or renumbered.
+Cross-referenced directly against `Software Requirements Specification and Project Plan.pdf` (v1.0, 11 November 2026 — Sections 6, 7, 8, and 17.6).  
+*Note:* Earlier Phase 1 documentation used shifted FR numbers for a few rows (e.g., mapping Brainrot Index to `FR-007` and Streak Freeze to `FR-030`). The matrix below uses the **exact requirement IDs and titles from Section 6 of the root SRS PDF**.
 
-### 8.1 Functional Requirements (`FR-001` – `FR-031`)
+### J.1 Functional Requirements (`FR-001` – `FR-031`)
 
-| SRS ID | Exact SRS Requirement Name | Priority | Current Status | Code References | Verification Evidence | Remaining Work & Target PR |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **FR-001** | **Onboarding and Consent** | **P0** | **Complete** | `src/components/UsagePermissionModal.tsx`, `App.tsx`, `src/utils/storage.ts` | Verified on device & unit test (`AT-08`) | None (`PR #1`) |
-| **FR-002** | **Usage Access Setup** | **P0** | **Complete** | `UsageStatsModule.kt`, `src/utils/usageStats.ts`, `src/screens/SettingsScreen.tsx` | Verified deep-link + MIUI intercept (`06-miui-permission-intercept.png`) | None (`PR #1`) |
-| **FR-003** | **Instagram Foreground-Time Estimate** | **P0** | **Complete** | `UsageStatsModule.kt`, `src/utils/usageStats.ts`, `src/screens/TodayScreen.tsx` | Verified `1h 42m` (`22 intervals`) on Redmi 11 Prime (`01-today-device-name-verified.png`) | None (`PR #1`) |
-| **FR-004** | **Tracking Status and Data Quality** | **P0** | **Complete** | `src/utils/domainLogic.ts`, `src/constants/types.ts`, `src/screens/TodayScreen.tsx` | Unit tests (`Part C 1-9`) + device verification of paused & revoked states | None (`PR #1`) |
-| **FR-005** | **Daily Usage Limit** | **P0** | **Complete** | `src/utils/domainLogic.ts`, `src/screens/TodayScreen.tsx`, `src/screens/SettingsScreen.tsx` | Unit test (`AT-04 & AT-05`) + verified preset changes (`30m`–`3h 00m`) on device | Custom minute picker in `PR #2` |
-| **FR-006** | **Limit Warnings and Gentle Nudges** | **P1** | **Complete (In-App) / Partial (OS Push)** | `src/utils/domainLogic.ts`, `src/screens/TodayScreen.tsx`, `App.tsx` | Unit test (`AT-04 & AT-05`) + verified in-app nudge banner at 80%/100% | Local OS notification scheduling in `PR #2` |
-| **FR-007** | **Brainrot Index / Daily Score** | **P1** | **Complete** | `src/utils/domainLogic.ts`, `src/screens/TodayScreen.tsx` | Unit test (`FR-007`) + verified `42/100` score on device | Breakdown modal in `PR #2` |
-| **FR-008** | **Mood and Status Summary** | **P1** | **Complete** | `src/utils/domainLogic.ts`, `src/screens/TodayScreen.tsx` | Verified dynamic mood pill (`Slightly cooked, ready to reset`) on device | Manual mood check-in log in `PR #2` |
-| **FR-009** | **Focus Break / Offline Reset** | **P1** | **Complete** | `src/components/BreakModal.tsx`, `src/utils/domainLogic.ts`, `App.tsx` | Unit test (`FR-009 & FR-021`) + verified countdown & `+30 XP` award | Custom break durations in `PR #2` |
-| **FR-010** | **Daily Missions** | **P0** | **Complete** | `src/screens/MissionsScreen.tsx`, `src/utils/domainLogic.ts`, `src/constants/data.ts` | Unit test (`AT-06`) + verified mission completion on device (`09-missions-progression.png`) | Auto-verifying usage missions in `PR #2` |
-| **FR-011** | **Weekly Quests** | **P2** | **Partial** | `src/screens/MissionsScreen.tsx` | UI progress card rendered (`5/7 days`) | Dynamic 7-day rolling streak calculation in `PR #2` |
-| **FR-012** | **XP and Reward Ledger** | **P0** | **Complete** | `src/utils/domainLogic.ts`, `src/utils/storage.ts`, `App.tsx` | Unit test (`AT-06`) verifying deterministic keys (`mission:<date>:<id>`, `chest:<date>`, `break:<date>:<n>`) | Ledger history viewer in `PR #2` |
-| **FR-013** | **Daily Reward Chest** | **P1** | **Complete** | `src/screens/TodayScreen.tsx`, `src/utils/domainLogic.ts`, `App.tsx` | Unit test (`AT-06`) + verified `Claimed today` state across cold restart | Multi-day chest reward table in `PR #3` |
-| **FR-014** | **Streak and Consistency Logic** | **P1** | **Partial** | `src/screens/MissionsScreen.tsx`, `src/screens/BadgesScreen.tsx` | Streak counters rendered in Missions/Badges UI | Daily midnight rollover & grace-day engine in `PR #2` |
-| **FR-015** | **Badges** | **P1** | **Complete** | `src/screens/BadgesScreen.tsx`, `src/utils/domainLogic.ts` | Unit test (`FR-009 & FR-021`) + verified `Offline Icon` & `Soft Reset` unlock rules | Additional milestone badges in `PR #3` |
-| **FR-016** | **Brainrot Card** | **P2** | **Partial** | `src/screens/BrainrotCardScreen.tsx`, `App.tsx` | Verified live display name (`PRAMIT`) & XP (`334 XP`) on card (`08-brainrot-card-custom-identity.png`) | Image export/share intent & dynamic archetype rules in `PR #3` |
-| **FR-017** | **Leaderboard / Squad View** | **P2** | **Partial (Local Preview)** | `src/screens/LeaderboardScreen.tsx`, `src/constants/data.ts` | Verified local leaderboard with user's live identity (`Pramit`) & XP | Explicit demo-squad labeling & local sorting in `PR #3` (real sync requires backend) |
-| **FR-018** | **Settings and Privacy Controls** | **P0** | **Complete** | `src/screens/SettingsScreen.tsx`, `src/utils/storage.ts`, `src/utils/domainLogic.ts` | Verified profile editor, tracking toggle, limit presets, & `Clear local history` (`AT-08`) | Data export JSON option in `PR #2` |
-| **FR-019** | **Exact Reel Count Tracking** | **Deferred / Rejected** | **Not Applicable (Rejected by SRS)** | `UsageStatsModule.kt`, `src/screens/TodayScreen.tsx` | Explicitly rejected by SRS due to Android OS privacy boundaries; UI labels metric as estimated foreground time | Must never be implemented without OS-supported API |
-| **FR-020** | **Instagram Scroll Time Tracking** | **P0** | **Complete** | `UsageStatsModule.kt`, `src/utils/usageStats.ts` | Verified foreground activity aggregation + 7-day breakdown on Xiaomi Redmi 11 Prime | None (`PR #1`) |
-| **FR-021** | **XP Economy and Points System** | **P0** | **Complete** | `src/utils/domainLogic.ts`, `App.tsx` | Unit tests (`AT-06`, `FR-009 & FR-021`) — healthy actions award XP; zero negative XP penalties when tracking is unavailable | Level/tier progression thresholds in `PR #2` |
-| **FR-022** | **Squads and Private Friend Groups** | **P2** | **Deferred (Post-MVP)** | `src/screens/LeaderboardScreen.tsx` | Static local preview only in Executive Demo | Requires backend & product-owner approval |
-| **FR-023** | **Leaderboards** | **P2** | **Partial (Local Preview)** | `src/screens/LeaderboardScreen.tsx` | Renders user's live XP and custom name alongside local club members | Dynamic rank reordering by live XP in `PR #3` |
-| **FR-024** | **Anonymous Roast Battles** | **Deferred** | **Deferred** | N/A | Deferred by SRS for psychological safety and moderation overhead | Requires product-owner approval & moderation backend |
-| **FR-025** | **Meme Popups and Personality Layer** | **P2** | **Partial** | `src/components/CelebrationOverlay.tsx`, `src/screens/TodayScreen.tsx` | Playful mascot, celebration overlay, and non-shaming copy active | Configurable tone presets in `PR #3` |
-| **FR-026** | **Reels Per Day Goal** | **P0 (Reframed)** | **Complete (Reframed as Daily Time Target)** | `src/screens/SettingsScreen.tsx`, `src/screens/TodayScreen.tsx` | Reframed per SRS `FR-026` specification as **Daily Instagram Foreground Time Target** (`30m`–`3h 00m`) | None (`PR #1`) |
-| **FR-027** | **Focus Mode / Scroll Cooldown** | **P1** | **Complete** | `src/components/BreakModal.tsx`, `App.tsx` | Verified `1m` / `5m` / `10m` offline timer & XP reward | Optional gentle app-reopen reminder in `PR #2` |
-| **FR-028** | **Daily / Weekly Brainrot Report** | **P1** | **Partial** | `src/screens/TodayScreen.tsx` (`7-DAY TREND` chart) | 7-day bar chart populated from `UsageStats` `dailyBreakdown` | Dedicated Weekly Summary card in `PR #3` |
-| **FR-029** | **Custom Shame / Hype Notifications** | **P2** | **Partial (In-App Gentle Nudge)** | `src/utils/domainLogic.ts`, `src/screens/SettingsScreen.tsx` | Gentle nudge toggle & in-app toast/banner implemented; harsh shame copy excluded | Local notification scheduling & tone selector in `PR #3` |
-| **FR-030** | **Streak Freeze / Grace Day** | **P1** | **Missing (Scheduled for PR #2)** | `src/constants/types.ts` | Planned in local streak state machine | Implement in `PR #2` (`feature/rot-mvp-core`) |
-| **FR-031** | **Shareable Brainrot Card** | **P2** | **Partial** | `src/screens/BrainrotCardScreen.tsx` | Card UI dynamically reflects custom display name, XP, and privacy status | Native share sheet export in `PR #3` |
+**Verified FR Totals (31 Requirements):** **13 Implemented** (`FR-001`–`FR-010`, `FR-013`, `FR-014`, `FR-021`) · **9 Partially Implemented** (`FR-011`, `FR-012`, `FR-015`, `FR-016`, `FR-017`, `FR-022`, `FR-024`, `FR-026`, `FR-029`) · **9 Not Implemented** (`FR-018`–`FR-020`, `FR-023`, `FR-025`, `FR-027`, `FR-028`, `FR-030`, `FR-031`, of which 3 are Deferred/Rejected by SRS).
 
-### 8.2 Non-Functional Requirements (`NFR-01` – `NFR-18`), Business Rules (`BT-01` – `BT-15`), and Acceptance Criteria (`AT-01` – `AT-12`)
-
-| Category & IDs | SRS Requirement Summary | Status in `PR #1` | Verification Evidence |
+| Requirement | SRS Reference | Implementation Status | Evidence / Notes |
 | :--- | :--- | :--- | :--- |
-| **NFR-01 – NFR-03 (Performance)** | Cold launch < 3s, cached dashboard < 500ms, `UsageStats` query off UI thread < 2s | **Complete** | Native query runs asynchronously via React Native bridge with 6s timeout guard; `cachedUsageSummary` renders immediately on mount. |
-| **NFR-04 – NFR-06 (Reliability & Offline)** | Core features work offline; no crash on missing permissions; zero duplicate XP on restart | **Complete** | Verified offline operation, `AT-06` idempotency tests, and cold-restart persistence on Xiaomi Redmi 11 Prime. |
-| **NFR-07 – NFR-12 (Privacy & Security)** | Local-first by default; no Instagram credentials; `PACKAGE_USAGE_STATS` only after disclosure; local data deletion | **Complete** | Verified `UsagePermissionModal`, `Clear local history` (`AT-08`), and local-only `AsyncStorage` profile. |
-| **NFR-13 – NFR-18 (Compatibility & Maintainability)** | Android 8.0+ (`minSdk 24`), MIUI/OEM resilience, modular native bridge, TypeScript strictness, unit testability | **Complete** | `tsc --noEmit`, `npm run lint`, `npm test` (8 suites), and Gradle `assembleDebug` all pass. |
-| **BT-01 – BT-15 (Business & Technical Rules)** | Estimate-only labeling (`BT-02`), missing data never `0h 00m` (`BT-03`), idempotent XP (`BT-04`), non-punitive missing data (`BT-05`), local-first (`BT-06`), no Accessibility Service (`BT-09`) | **Complete** | Enforced in `domainLogic.ts`, `UsageStatsModule.kt`, and verified by unit tests + static lint rules. |
-| **AT-01 – AT-12 (Acceptance Tests)** | Onboarding (`AT-01`), permission denied (`AT-02`), foreground estimate (`AT-03`), limit remaining (`AT-04`), over-limit (`AT-05`), idempotent XP (`AT-06`), focus break (`AT-07`), restart persistence (`AT-08`), pause tracking (`AT-09`), delete data (`AT-10`), Instagram missing (`AT-11`), stale/empty OS record (`AT-12`) | **Complete** | All 12 acceptance scenarios covered across `src/utils/__tests__/domainLogic.test.ts` and physical device testing. |
+| **Onboarding and Consent** | `FR-001` (P0) | **Implemented** | `src/components/UsagePermissionModal.tsx`, `App.tsx`, `src/utils/storage.ts`. Explicit consent precedes `UsageStats` tracking; decline preserves app usability; privacy explanation & tracking toggle accessible in Settings. |
+| **Usage Access Setup** | `FR-002` (P0) | **Implemented** | `UsageStatsModule.kt`, `RotUsageTracker.kt`, `src/screens/SettingsScreen.tsx`. Deep-links to `ACTION_USAGE_ACCESS_SETTINGS` (MIUI intercept tested), auto-rechecks on `AppState` resume, pauses cleanly on revocation without data loss. |
+| **Instagram Foreground-Time Estimate** | `FR-003` (P0) | **Implemented** | `RotUsageTracker.kt`, `UsageStatsModule.kt`, `src/screens/TodayScreen.tsx`. Aggregates `queryEvents` + deduplicated `INTERVAL_DAILY` fallback for `com.instagram.android`; labels as estimated foreground time; never shows Reel counts. |
+| **Tracking Status and Data Quality** | `FR-004` (P0) | **Implemented** | `src/constants/types.ts`, `src/utils/domainLogic.ts`, `src/screens/TodayScreen.tsx`. 9-state `UsageQueryResult` distinguishes `zero_usage` from `no_os_record`, `permission_required`, `tracking_paused`, `not_installed`, `query_failed`, `stale`, and `incomplete`. |
+| **Daily Usage Limit** | `FR-005` (P0) | **Implemented** | `src/screens/SettingsScreen.tsx`, `src/utils/domainLogic.ts`. Supports presets (`30m`–`3h 00m`), `±5m` steppers, custom numeric entry (`15m`–`720m`), and Weekend Breathing Room (`+30m`). *Difference from SRS:* no explicit "disable limit entirely" mode—limit is always bounded `15m–720m`. |
+| **Limit Warnings and Reminders** | `FR-006` (P0) | **Implemented** | `RotNotificationScheduler.kt`, `RotUsageCheckWorker.kt`, `RotNotificationReceivers.kt`, `RotNotificationHelper.kt`, `SettingsScreen.tsx`, `NotificationCenterModal.tsx`. 80%/100% threshold nudges, configurable evening/streak reminders, quiet hours, category toggles, and force-stop/background-job note. *Unattended wall-clock `AlarmManager` delivery & reboot recovery are `Not Verified` on-device (see Section G).* |
+| **Daily and Weekly Reports** | `FR-007` (P0 daily; P1 weekly/monthly) | **Implemented** | `TodayScreen.tsx` (daily summary + 7-day trend bars with OS coverage/completeness flags), `buildWeeklyAchievementSummary` in `domainLogic.ts`, and `WeeklyAchievementPoster` in `ShareableCards.tsx`. *Note:* Monthly report (P1 extension) is not implemented. |
+| **XP and Levels** | `FR-008` (P0) | **Implemented** | `src/utils/domainLogic.ts`, `App.tsx`, `src/screens/MissionsScreen.tsx`. Deterministic XP rules (`mission`, `chest`, `focus_break`, `weekly_quest`, `streak`), idempotent `claimedXpEvents`, `xpLedger` consistency check, interactive XP pill, and `calculatePlayerLevel`. |
+| **Badges and Achievements** | `FR-009` (P0 limited set) | **Implemented** | `src/constants/data.ts` (`getBadges`), `src/screens/BadgesScreen.tsx`. 6 badges with unique IDs, descriptions, eligibility rules, and `unlockedAt` timestamps. |
+| **Daily Missions** | `FR-010` (P0) | **Implemented** | `src/constants/data.ts`, `src/screens/MissionsScreen.tsx`, `src/utils/domainLogic.ts`. 4 daily missions (including usage-linked auto-verified `stay-under-target`); skippable with zero punitive XP/streak penalty. *(App also implements Weekly Quests + Streak/Grace-Day Engine alongside FR-010.)* |
+| **Mascot Mood and Evolution** | `FR-011` (P0) | **Partially Implemented** | `src/components/RotMascot.tsx`, `TodayScreen.tsx`, `BrainrotCardScreen.tsx`, `domainLogic.ts`. 5 mascot archetype variants, computed Brain Mood, manual Mood Check-in Log, and Evolution Path exist; **missing** a user setting to disable/hide or reset the mascot feature as specified by SRS FR-011. |
+| **Smart Daily Roast** | `FR-012` (P0 template-based) | **Partially Implemented** | `domainLogic.ts`, `BrainrotCardScreen.tsx`, `TodayScreen.tsx`. Local non-shaming template quotes (`"One more Reel" is your bedtime story.`, `"ROT. daily wisdom"`) with zero external AI calls; **missing** a dedicated Daily Roast feed and explicit mute/hide/report content toggle. |
+| **Private Profile Card** | `FR-013` (P0 private; P1 shareable) | **Implemented** | `BrainrotCardScreen.tsx`, `CardSelectionModal.tsx`, `ShareableCards.tsx`, `RotCardMediaModule.kt`. Private Mode & stats redaction toggle inside export modal, off-by-default sharing with explicit preview, Feed/Story PNG gallery export, and Android Share Sheet. |
+| **Data Export, Deletion, and Tracking Disablement** | `FR-014` (P0) | **Implemented** | `SettingsScreen.tsx`, `domainLogic.ts`, `storage.ts`, `RotNotificationPrefs.kt`. Tracking pause toggle, two-tap `Clear local history`, and `Export / Share JSON` (`rot-user-data-export-v1`) + inline JSON preview. |
+| **Customization and Cosmetic Inventory** | `FR-015` (P1) | **Partially Implemented** | `src/constants/data.ts` (`dailyItems`), `src/components/DailyChestCard.tsx`. Daily chest awards named cosmetic items (`Soft Reset sticker`, etc.), **but there is no persistent cosmetic inventory or equip/unequip slot UI**. |
+| **Brainrot Wrapped** | `FR-016` (P1) | **Partially Implemented** | `ShareableCards.tsx` (`WeeklyAchievementPoster`), `domainLogic.ts` (`buildWeeklyAchievementSummary`). Weekly Achievement recap card with week range, progress, and preview-before-share exists; **monthly/annual multi-card Wrapped** is not implemented. |
+| **Personality Type** | `FR-017` (P1) | **Partially Implemented** | `domainLogic.ts` (`calculateBrainrotIndex`), `RotMascot.tsx`, `BrainrotCardScreen.tsx`. Assigns 4 humorous nonclinical archetypes (`Soft Launcher`, `Grass Toucher`, `Night Owl`, `Scroll Explorer`); **missing** user manual selection/override or dedicated opt-out toggle outside Private Mode. |
+| **Friend Groups / Squads** | `FR-018` (P1, Social Phase) | **Not Implemented** | `LeaderboardScreen.tsx` / `data.ts` provide a local static preview (`Friends`, `Squad`, `Campus`) with user XP merged/sorted locally; real accounts, invite-only squads, selective sharing, block, and abuse reporting are gated on backend phase. |
+| **24-Hour Friend Challenge** | `FR-019` (P1, Social Phase) | **Not Implemented** | No friend challenge invites, challenge state, or multi-user sync exist. |
+| **Anonymous Roast Battle** | `FR-020` (Deferred) | **Not Implemented** | Intentionally deferred by SRS pending moderation owner, reporting/blocking, and abuse-response plan. |
+| **Braincell Recovery Mode / Focus Session** | `FR-021` (P0 basic; P1 focus session) | **Implemented** | `src/components/BreakModal.tsx`, `App.tsx`, `domainLogic.ts`. `1m`/`5m`/`10m` break timer, early stop allowed, never blocks Instagram, awards `+30 XP`, completes mission & unlocks `Offline Icon`. |
+| **Touch Grass / Offline Domino** | `FR-022` (P1) | **Partially Implemented** | `data.ts`, `MissionsScreen.tsx`, `BreakModal.tsx`. Self-reported `"Touch some grass"` mission works without GPS/photos/contacts/health data; **missing** the multi-step "Offline Domino" activity chain mechanic. |
+| **Braincell Graveyard** | `FR-023` (P1) | **Not Implemented** | Broken streaks/missed days exist in `streak.historyByDate` with `recoverStreakState`, **but there is no dedicated opt-in Braincell Graveyard UI view**. |
+| **Mystery Rewards** | `FR-024` (P1) | **Partially Implemented** | `DailyChestCard.tsx`, `domainLogic.ts`. Non-monetary daily chest awards `+50 XP` and a cosmetic item name; **missing** transparent reward-pool/odds catalog and persistent unlocked-item vault. |
+| **Brainrot Weather** | `FR-025` (P2) | **Not Implemented** | Future community-aggregate climate requiring backend and cohort privacy thresholds. |
+| **Black Box / Estimate Explanation** | `FR-026` (P1) | **Partially Implemented** | `UsagePermissionModal.tsx` explains tracking method and `TodayScreen.tsx` displays `source` + staleness/incomplete banners + Brainrot Index Breakdown, **but there is no dedicated Black Box history log explaining why past daily estimates changed or had gaps**. |
+| **Contagion Map** | `FR-027` (Deferred / P2) | **Not Implemented** | Deferred/P2 community visualization excluded due to re-identification and stigma risk. |
+| **Blackout / Focus Campaign** | `FR-028` (P1) | **Not Implemented** | Individual Focus Breaks exist, but opt-in group/scheduled time-boxed Blackout campaigns are not implemented. |
+| **Museum** | `FR-029` (P1) | **Partially Implemented** | `BadgesScreen.tsx` ("The ROT. Trophy Cabinet") displays 6 badges with unlock dates, **but does not showcase mascot evolution forms, chest cosmetics, or historical milestones together**. |
+| **What If Simulator** | `FR-030` (P2) | **Not Implemented** | No interactive hypothetical target / time-saved projection simulator exists. |
+| **Prediction Market** | `FR-031` (Rejected / Deferred) | **Not Implemented** | Intentionally rejected/excluded by SRS; zero wagering, betting, or paid randomized mechanics exist. |
+
+### J.2 Non-Functional Requirements (`NFR-01` – `NFR-18`), Business Rules (`BT-01` – `BT-15`) & Acceptance Criteria (`AT-01` – `AT-12`)
+
+**Verified NFR Totals (18 Requirements):** **9 Implemented** (`NFR-05`, `NFR-06`, `NFR-07`, `NFR-09`, `NFR-12`, `NFR-13`, `NFR-14`, `NFR-17`, `NFR-18`) · **6 Partially Implemented / Not Verified** (`NFR-01`–`NFR-04`, `NFR-10`, `NFR-11`) · **3 Not Implemented / Backend N/A** (`NFR-08`, `NFR-15`, `NFR-16`).
+
+| Requirement Group | SRS Reference | Implementation Status | Evidence / Notes |
+| :--- | :--- | :--- | :--- |
+| **Performance & Battery Targets** (`< 2s` dashboard, `< 3s` cold launch, `< 2%` battery/24h) | `NFR-01`, `NFR-02`, `NFR-03` | **Not Verified** | Async native `UsageStats` bridge + cached summary render on open, **but formal P95 latency percentiles and 24-hour battery profiling (`NFR-03`) have not been benchmarked**. |
+| **Beta Crash-Free Reliability** (`>= 99.5%` beta sessions) | `NFR-04` | **Not Verified** | Local debug QA showed zero crashes, **but `>= 99.5%` monitored beta crash-free telemetry awaits closed beta**. |
+| **Freshness, Accuracy Communication, Localization, Maintainability, Logging & Notification Controls** | `NFR-05`, `NFR-06`, `NFR-12`–`NFR-14`, `NFR-18` | **Implemented** | `formatFreshnessLabel`, `statusDetail`, 9-state contract (`NFR-05`, `NFR-06`); English MVP UI (`NFR-12`); `15/15` unit tests (`NFR-13`); zero PII logs (`NFR-14`); per-category notification toggles without nagging (`NFR-18`). |
+| **Privacy, Local Security & Immediate Deletion** | `NFR-07`, `NFR-09`, `NFR-17` | **Implemented** | No contacts, passwords, or Instagram credentials stored; `Clear local history` & JSON export work immediately locally (`NFR-17`). |
+| **Accessibility** (`screen readers, scalable text, contrast, touch targets`) | `NFR-10` | **Partially Implemented / Not Verified** | Key header controls (`Notifications`, `XP Pill`, name clear) have `accessibilityLabel`/`accessibilityRole`, **but a full TalkBack screen-reader & font-scaling audit across all 6 screens has not been executed**. |
+| **Device & OS Compatibility Matrix** (`supported OS range & reference devices`) | `NFR-11` | **Partially Implemented** | Verified on 1 reference device (**Xiaomi Redmi 11 Prime, Android 14 / API 34**; `minSdk 24`–`targetSdk 36`); **wider multi-device OEM compatibility matrix has not been tested**. |
+| **Backend TLS, Availability & Social Abuse Prevention** | `NFR-08`, `NFR-15`, `NFR-16` | **Not Implemented** (Backend / Social N/A) | `NFR-08`/`NFR-16` backend targets are N/A in local MVP; `NFR-15` moderation/reporting is gated on Phase 2 social features. |
+| **Core Local Business Rules** (`consent-first`, `estimate-only`, `no Reel counts`, `missing != 0`, `track-disable safe`, `healthy XP`, `non-punitive gaps`, `share off by default`, `no paid loot/betting`, `no GPS`, `fictional mood`, `local timezone`) | `BT-01`–`BT-08`, `BT-11`–`BT-13`, `BT-15` | **Implemented** | Enforced in `domainLogic.ts`, `RotUsageTracker.kt`, `RotNotificationPrefs.kt`, `CardSelectionModal.tsx`, and `scripts/lint.mjs`; Leaderboard is strictly local demo preview with no external sharing. |
+| **Social / Community Business Rules** (`leave/block/report`, `anonymous moderation`, `minimum cohort thresholds`) | `BT-09`, `BT-10`, `BT-14` | **Not Implemented** | Social groups, anonymous roast battles, and community aggregates (`FR-018`, `FR-020`, `FR-025`, `FR-027`) are not implemented in local MVP. |
+| **Acceptance Tests Verified on Device & Unit Suite** (`denied`, `granted`, `no OS record`, `limit persists`, `idempotent XP`, `incomplete streak`, `delete history`, `no share w/o action`, `no Reel count`) | `AT-01`–`AT-04`, `AT-06`–`AT-08`, `AT-10`, `AT-11` | **Implemented** (Verified) | Covered across `src/utils/__tests__/domainLogic.test.ts` (15 tests), `scripts/lint.mjs`, and Redmi 11 Prime QA (`AT-01`–`AT-04`, `AT-08`, `AT-10`, `AT-11` live; `AT-06`, `AT-07` via unit tests). |
+| **Acceptance Tests Partially / Not Live-Verified** (`notifications disabled UI`, `background delay stale warning`, `screen reader`) | `AT-05`, `AT-12`, `AT-09` | **Not Verified** (Live Device) | `AT-05` (`notifications_off` / `permission_required` diagnostics in `SettingsScreen.tsx`) and `AT-12` (`STALE_THRESHOLD_MS` in `domainLogic.test.ts`) exist in code/unit tests without full live-device simulation; `AT-09` (TalkBack navigation) is **Not Verified**. |
+
+### J.3 Summary of Missing, Partial, and Clarified Scope
+- **Additional MVP Features Implemented Beyond Minimum P0:** Streak & Grace-Day Engine + Streak Recovery, Weekly Quests, Brain Bank XP Ledger + Interactive Header Jump, Mood Check-in Log, Dual Shareable Cards (`1080x1350` & `1080x1920`) with Native Share Sheet & Gallery Deduplication, Private Mode Redaction, and WorkManager/AlarmManager + Persistent Unread Badge.
+- **Unfulfilled P0/P1 Details Needing Decision or Polish:**
+  - `FR-005`: Option to disable daily limit entirely (currently `15m–720m` numeric range).
+  - `FR-011` / `FR-012` / `FR-017`: Settings toggles to hide/reset mascot, mute Daily Roast copy, or manually override/opt out of Personality Type.
+  - `FR-015` / `FR-024` / `FR-029`: Equippable Cosmetic Inventory UI, transparent Mystery Reward catalog, and unified Museum view.
+  - `FR-022` / `FR-023` / `FR-026`: Offline Domino chain, Braincell Graveyard view, and Black Box estimate-change log.
+  - `FR-016` / `FR-028` / `FR-030`: Monthly/Annual Wrapped, Blackout campaigns, and What If Simulator.
+  - `FR-018` / `FR-019` / `FR-025` / `FR-027` / `FR-020` / `FR-031`: Social, community, and deferred/rejected concepts gated on backend/moderation approval.
 
 ---
 
-## 9. Known Limitations
+## Appendix: Phase 1 Screenshot Gallery (`docs/screenshots/executive-demo/`) & PR #1 Archive
 
-1. **Package-Level Foreground Granularity Only:** Android `UsageStatsManager` reports activity lifecycle events for `com.instagram.android` (`InstagramMainActivity`, `ModalActivity`, `TransparentModalActivity`), not internal React/Litho sub-views. ROT honestly labels all measurements as **estimated Instagram foreground time** and never claims exact Reel counts.
-2. **OS `UsageEvents` Retention (~7 Days):** Android prunes raw `UsageEvents` after ~7 days. Older history relies on persisted local summaries or coarse daily buckets.
-3. **OEM `INTERVAL_DAILY` Bucket Quirks:** Xiaomi MIUI/HyperOS can emit multiple overlapping daily summary buckets when queried via `queryUsageStats(INTERVAL_DAILY, ...)`. `UsageStatsModule.kt` prioritizes granular `queryEvents` transitions and deduplicates daily fallback buckets using `maxOf` per day window, marking bucket-only estimates as `status: 'incomplete'`.
-4. **Device Name OEM Variance:** Not all Android OEMs expose the owner-customized device nickname to unprivileged apps without Bluetooth permissions; ROT reads `Settings.Global.DEVICE_NAME` -> `bluetooth_name` -> `Build.MODEL` (`Redmi 11 Prime`) and provides an inline manual display-name editor.
-5. **Social / Squad Features Are Local Previews:** Squad rankings on the Leaderboard tab are local demo data in `PR #1`; real multi-user sync is deferred to a post-MVP phase.
-
----
-
-## 10. Portable Screenshot Gallery (`docs/screenshots/executive-demo/`)
-
-All screenshots are stored inside the repository under `docs/screenshots/executive-demo/`:
+All Phase 1 device verification screenshots remain preserved in `docs/screenshots/executive-demo/`:
 
 | # | File | Description | Preview |
 | :--- | :--- | :--- | :--- |
 | **01** | [01-today-device-name-verified.png](screenshots/executive-demo/01-today-device-name-verified.png) | Today screen on first launch showing Android device name default (`Good evening, Redmi 11 Prime.`) and live verified Instagram usage (`1h 42m`, `22 intervals today`). | ![01 Today Device Default](screenshots/executive-demo/01-today-device-name-verified.png) |
 | **02** | [02-today-inline-name-editor.png](screenshots/executive-demo/02-today-inline-name-editor.png) | Inline display-name editor on the Today screen with custom name `"Pramit"` entered. | ![02 Today Inline Name Editor](screenshots/executive-demo/02-today-inline-name-editor.png) |
-| **03** | [03-today-custom-name-persisted.png](screenshots/executive-demo/03-today-custom-name-persisted.png) | Today screen after a full `am force-stop` cold restart confirming `"Good evening, Pramit."`, `334 XP`, and `1h 42m` persisted. | ![03 Today Custom Name Persisted](screenshots/executive-demo/03-today-custom-name-persisted.png) |
+| **03** | [03-today-custom-name-persisted.png](screenshots/executive-demo/03-today-custom-name-persisted.png) | Today screen after `am force-stop` cold restart confirming `"Good evening, Pramit."`, `334 XP`, and `1h 42m` persisted. | ![03 Today Custom Name Persisted](screenshots/executive-demo/03-today-custom-name-persisted.png) |
 | **04** | [04-today-tracking-paused.png](screenshots/executive-demo/04-today-tracking-paused.png) | Today screen when tracking is paused (`"Tracking is paused. Your previous saved progress is preserved."` — never `0h 00m`). | ![04 Today Tracking Paused](screenshots/executive-demo/04-today-tracking-paused.png) |
 | **05** | [05-today-permission-required.png](screenshots/executive-demo/05-today-permission-required.png) | Today screen when Usage Access is denied/revoked (`"ROT needs Usage Access to estimate your Instagram screen time."`). | ![05 Today Permission Required](screenshots/executive-demo/05-today-permission-required.png) |
 | **06** | [06-miui-permission-intercept.png](screenshots/executive-demo/06-miui-permission-intercept.png) | Xiaomi MIUI `SpecialPermissionInterceptActivity` 10-second security intercept when granting Usage Access. | ![06 MIUI Permission Intercept](screenshots/executive-demo/06-miui-permission-intercept.png) |
 | **07** | [07-settings-profile-and-diagnostics.png](screenshots/executive-demo/07-settings-profile-and-diagnostics.png) | Settings screen showing `Display name: Pramit`, `Revert to device name (Redmi 11 Prime)`, and Usage Access diagnostic badges. | ![07 Settings Profile and Diagnostics](screenshots/executive-demo/07-settings-profile-and-diagnostics.png) |
-| **08** | [08-brainrot-card-custom-identity.png](screenshots/executive-demo/08-brainrot-card-custom-identity.png) | Brainrot Card screen dynamically rendering `ROT. BRAINROT CLUB · PRAMIT` and `334 XP`. | ![08 Brainrot Card Identity](screenshots/executive-demo/08-brainrot-card-custom-identity.png) |
-| **09** | [09-missions-progression.png](screenshots/executive-demo/09-missions-progression.png) | Missions screen showing idempotent daily missions and weekly quest progress. | ![09 Missions Screen](screenshots/executive-demo/09-missions-progression.png) |
+| **08** | [08-brainrot-card-custom-identity.png](screenshots/executive-demo/08-brainrot-card-custom-identity.png) | Phase 1 Brainrot Card dynamically rendering `ROT. BRAINROT CLUB · PRAMIT` and `334 XP`. | ![08 Brainrot Card Identity](screenshots/executive-demo/08-brainrot-card-custom-identity.png) |
+| **09** | [09-missions-progression.png](screenshots/executive-demo/09-missions-progression.png) | Phase 1 Missions screen showing idempotent daily missions and weekly quest progress. | ![09 Missions Screen](screenshots/executive-demo/09-missions-progression.png) |
 
----
-
-## 11. PR #1 — Ready-to-Paste Title, Description & Review Checklist
-
-### PR #1 Title
-`feat(android): deliver ROT Executive Demo with UsageStats tracking, local profile identity, and persistent progression`
-
-### PR #1 Description
-```markdown
-## Summary
-Delivers the **ROT – The Brainrot Club** Android Executive Demo (`feature/rot-executive-demo`), upgrading the prototype into a local-first Android application verified on physical hardware (Xiaomi Redmi 11 Prime, Android 14).
-
-## Key Changes
-1. **Native Android Foundation & `UsageStatsModule.kt`:**
-   - Configured Android project (`com.rot.brainrotclub`) for Expo `58.0.24` / React Native `0.88.1` (`compileSdk 37`, `targetSdk 36`, `minSdk 24`, Kotlin `2.2.10`).
-   - Implemented `UsageStatsModule.kt` to query `UsageStatsManager` (`queryEvents` across Instagram foreground activities with deduplicated `INTERVAL_DAILY` fallback), check `AppOpsManager` `OPSTR_GET_USAGE_STATS`, and deep-link to `Settings.ACTION_USAGE_ACCESS_SETTINGS`.
-   - Added portable Windows CMake staging configuration (`${rootDir.toPath().root}rot-cxx`).
-2. **Local-First Device & Custom Display-Name System:**
-   - Removed all hardcoded `"Rafi"` / `"rafi"` strings (enforced via `npm run lint`).
-   - Resolves the best available Android device/model name (`Redmi 11 Prime`) on first launch via `getDeviceProfileInfo()`, allows inline and Settings display-name editing (trimmed, non-blank, max 28 chars), persists in `AsyncStorage`, and reverts to the device name or `"ROT User"` fallback.
-3. **Structured 9-State `UsageStats` Data Contract:**
-   - Distinguishes `permission_required`, `tracking_paused`, `not_installed`, `no_os_record`, `query_failed`, `stale`, `incomplete`, `zero_usage`, and `ok` via `UsageQueryResult`.
-   - Never presents missing, paused, or failed data as `0h 00m`, and stores `cachedUsageSummary` separately so failed/revoked queries never overwrite valid historical data.
-   - Rechecks Usage Access automatically on `AppState` foreground resume.
-4. **Daily Limits, Persistent Missions, Idempotent XP & Focus Break:**
-   - Configurable daily targets (`30m`–`3h 00m`) + Weekend Breathing Room (`+30m`) + gentle nudges at 80%/100%.
-   - Deterministic `AsyncStorage` reward keys (`mission:<date>:<id>`, `chest:<date>`, `break:<date>:<n>`) preventing duplicate XP claims.
-   - Focus Break timer (`1m` demo / `5m` / `10m`) awarding `+30 XP` and unlocking the `Offline Icon` badge.
-5. **Testing, CI & Documentation:**
-   - Added 8 unit test suites (`npm test`), static lint checks (`npm run lint`), GitHub Actions CI (`.github/workflows/ci.yml`), updated `README.md`, and added `docs/EXECUTIVE_DEMO_REPORT.md` with portable device screenshots.
-
-## Verification
-- `npm run typecheck` -> 0 errors
-- `npm run lint` -> Passed across 23 files
-- `npm test` -> 8 passed, 0 failed
-- `cd android && .\gradlew.bat :app:assembleDebug --no-daemon` -> `BUILD SUCCESSFUL`
-- Verified live on Xiaomi Redmi 11 Prime (Android 14 / API 34)
-```
-
-### PR #1 Review Checklist
-- [x] Branch is `feature/rot-executive-demo` with clean, logical commits.
-- [x] Pre-existing `.idea/caches/deviceStreaming.xml`, `.idea/vcs.xml`, and `Software Requirements Specification and Project Plan.pdf` are untouched and untracked.
-- [x] Zero hardcoded `"Rafi"` / `"rafi"` references remain in source code.
-- [x] Missing, paused, or failed `UsageStats` states never display `0h 00m` or overwrite `cachedUsageSummary`.
-- [x] All metrics are labeled as **estimated Instagram foreground time** (no exact Reel count claims).
-- [x] `npm run typecheck`, `npm run lint`, `npm test`, and `:app:assembleDebug` pass.
-- [x] All screenshots in `README.md` and `docs/EXECUTIVE_DEMO_REPORT.md` use portable repo-relative paths (`docs/screenshots/executive-demo/*.png`).
-
----
-
-## 12. PR #2 Implementation Plan — `feature/rot-mvp-core`
-
-**Objective:** Complete all remaining **P0** and **P1** local-first MVP functional requirements from the SRS without introducing backend dependencies.
-
-### Scope & Requirements Covered
-- **FR-014 & FR-030 (Streak Engine & Grace Day / Streak Freeze):**
-  - Implement a deterministic daily rollover engine (`streakDays`, `lastEvaluatedDate`, `streakFreezeAvailable`, `graceDayUsedDates`) stored in `PersistedAppState`.
-  - Automatically evaluate whether yesterday's verified Instagram foreground time stayed within `effectiveLimitMinutes` or whether the user completed a recovery focus break/mission.
-  - Provide 1 automatic **Grace Day / Streak Freeze** per 7-day window so a single heavy scroll day or missing-data day never resets the user's streak unfairly (`BT-05`).
-- **FR-010 & FR-011 (Usage-Linked Auto-Verifying Missions & Dynamic Weekly Quests):**
-  - Connect daily missions (e.g., *"Stay under your daily scroll target"*, *"Complete a 10-minute focus break"*) to live `UsageDisplayState` and `completedFocusBreaks` so qualifying missions auto-unlock claimable XP.
-  - Compute the **Weekly Quest** (`5/7 days`) dynamically from the last 7 days of `dailyBreakdown` and completed mission dates.
-- **FR-005 & FR-006 (Custom Daily Target Stepper & Local Threshold Notifications):**
-  - Add a custom `+5m / -5m` stepper alongside the quick presets (`30m`–`3h 00m`).
-  - Integrate local-only Android notifications (or foreground check triggers) for 80% approaching-limit and 100% target-reached nudges when `dailyGentleNudge` is enabled.
-- **FR-007 & FR-008 (Brainrot Index Breakdown Modal & Daily Mood Log):**
-  - Add a tap-to-inspect breakdown sheet on the Brainrot Index card showing how today's score (`0–100`) was derived from target ratio, focus breaks, and missions.
-  - Allow the user to log their subjective scroll mood alongside the computed mood pill.
-- **FR-012 & FR-018 (XP Ledger History View & Local JSON Data Export):**
-  - Add a collapsible **Recent XP Activity** drawer showing the timestamped `awardedEventKeys` ledger.
-  - Add an **Export local data (JSON)** action next to **Clear local history** in Settings.
-
-### Acceptance Criteria & Tests for PR #2
-- Unit tests covering multi-day streak increments, midnight date rollover, Grace Day consumption, and non-punitive behavior when `UsageStats` is unavailable.
-- Unit tests verifying usage-linked mission auto-completion and weekly quest progress calculation.
-- Full verification on physical Android device (`Xiaomi Redmi 11 Prime`).
-
----
-
-## 13. PR #3 Implementation Plan — `feature/rot-product-experience`
-
-**Objective:** Deliver the **P2** product experience, shareability, weekly reporting, and polish layers defined in the SRS while maintaining a 100% local-first architecture.
-
-### Scope & Requirements Covered
-- **FR-016 & FR-031 (Dynamic Brainrot Card Archetypes & Native Share Sheet):**
-  - Compute the user's **Brainrot Archetype** (*Newbie*, *Scroll Explorer*, *Main-Feed Diplomat*, *Offline Legend*) dynamically from their 7-day `UsageStats` trend, streak length, and total XP.
-  - Implement native Android share sheet export (`Share.share` / view snapshot) so users can share their Brainrot Card to stories or messages without exposing raw screen-time numbers unless toggled.
-- **FR-028 (Dedicated Weekly Brainrot Report Card):**
-  - Expand the 7-day trend section into an interactive **Weekly Brainrot Report** comparing this week's daily average, peak scroll day, total focus breaks, and XP earned against the user's target.
-- **FR-015 & FR-013 (Expanded Badge Unlock Matrix & Multi-Tier Daily Chest):**
-  - Wire all 6 badges in `BadgesScreen.tsx` (*Grass Toucher*, *Sunrise Safe*, *2-Hour Club*, *Streak Keeper*, *Soft Reset*, *Offline Icon*) to deterministic local unlock evaluators.
-  - Add a rotating pool of collectible titles and bonus XP rewards to the Daily Reward Chest.
-- **FR-017, FR-023 & FR-025 (Local Club Leaderboard Sorting, Demo Squad Labeling & Tone Presets):**
-  - Dynamically sort the Leaderboard rows so the user moves up the board as they earn XP, and clearly badge AI/demo club mates as **`Local Demo Squad`** until backend sync is enabled.
-  - Add a **Coaching Tone** selector in Settings (*Gentle Reset* vs. *Playful Hype*).
-
-### Acceptance Criteria & Tests for PR #3
-- Unit tests for archetype classification, weekly report aggregation, badge unlock evaluators, and dynamic leaderboard sorting.
-- End-to-end verification on physical Android hardware.
-
----
-
-## 14. Items Requiring Product-Owner Approval
-
-Per the SRS scope boundaries and engineering guardrails, the following items are **intentionally excluded** from `PR #1`–`PR #3` and require explicit Product Owner / CEO approval before implementation:
-
-1. **Backend Infrastructure, User Accounts & Cloud Sync (`FR-017`, `FR-022`, `FR-023`):**
-   - Introducing Firebase / Supabase / custom backend services, authentication, or cloud database storage for multi-device sync, live friend invite codes (`ROT-204`), and real-time multi-user squads.
-2. **Anonymous Roast Battles (`FR-024`):**
-   - Marked **Deferred** in the SRS due to psychological safety risks, anti-bullying moderation requirements, and backend reporting workflows.
-3. **Exact Reel Count Tracking via Accessibility Service (`FR-019`):**
-   - Marked **Deferred / Rejected** in the SRS. Counting individual Reels inside Instagram would require an Android `AccessibilityService` inspecting screen nodes, which carries severe privacy risks and Google Play policy restrictions. ROT must continue using `UsageStatsManager` foreground time estimates unless product leadership explicitly directs otherwise.
-4. **Google Play Store Production Signing & Data Safety Submission:**
-   - Configuring a production release keystore, Play Console `PACKAGE_USAGE_STATS` declaration form, and public privacy policy URL for store distribution.
+### PR #1 Historical Scope & Product-Owner Approval Boundaries
+- **PR #1 Title (`feature/rot-executive-demo`):** `feat(android): deliver ROT Executive Demo with UsageStats tracking, local profile identity, and persistent progression`
+- **Items Explicitly Gated on Product-Owner Approval (Preserved):**
+  1. Backend infrastructure, accounts & cloud sync (`FR-018`, `FR-019`).
+  2. Anonymous Roast Battles (`FR-020`) — deferred for moderation & psychological safety.
+  3. Accessibility Service exact Reel counting — rejected per SRS `Section 3.2` / `BT-03`.
+  4. Google Play Store production signing, `PACKAGE_USAGE_STATS` declaration, and public privacy policy URL.

@@ -9,46 +9,75 @@ import {
   Platform,
   AppState,
   AppStateStatus,
+  Share,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { COLORS } from './src/constants/theme';
 import {
   Badge,
+  CardExportFormat,
+  CardType,
   Celebration,
   InstagramUsageSummary,
+  MoodId,
+  NotificationInboxSnapshot,
+  NotificationStatusSnapshot,
   PersistedAppState,
   UserSettings,
   View as ViewType,
+  WeeklyQuestId,
 } from './src/constants/types';
 import { getBadges } from './src/constants/data';
 import {
   buildUsageDisplayState,
+  buildWeeklyAchievementSummary,
   calculateBrainrotIndex,
   calculateEarnedXpForDate,
   calculateLimitProgress,
+  calculatePlayerLevel,
   calculateTotalXp,
   claimDailyChestState,
+  claimWeeklyQuestState,
   clampDailyLimitMinutes,
   clearLocalHistoryState,
   completeFocusBreakState,
   createInitialPersistedState,
+  evaluatePendingNotifications,
   formatMinutesAsHoursAndMinutes,
+  formatUnreadBadgeCount,
   getDailyChestForDate,
   getEffectiveDailyLimitMinutes,
   getLocalDateKey,
   getMissionsForDate,
+  getWeeklyQuestState,
+  getXpLedgerEntries,
+  isDateActiveForStreak,
+  logDailyMoodState,
+  recoverStreakState,
   resolveEffectiveDisplayName,
   selectCachedSummaryToPersist,
+  serializeUserDataExportJson,
+  syncUsageLinkedMissionsState,
   toggleMissionState,
   updateCustomDisplayNameState,
   updateDeviceDefaultNameState,
+  verifyXpLedgerConsistency,
 } from './src/utils/domainLogic';
 import { loadPersistedState, savePersistedState } from './src/utils/storage';
 import {
+  checkAndRequestNotificationPermission,
+  clearNativeNotificationHistory,
+  fetchNotificationInbox,
+  fetchNotificationStatus,
+  markAllNativeNotificationsRead,
+  openAndroidNotificationSettings,
   openAndroidUsageAccessSettings,
   queryDeviceProfileInfo,
   queryInstagramUsageSummary,
+  sendLocalNotification,
+  subscribeToNativeNotificationUpdates,
+  syncNativeNotificationConfig,
 } from './src/utils/usageStats';
 import TodayScreen from './src/screens/TodayScreen';
 import MissionsScreen from './src/screens/MissionsScreen';
@@ -58,6 +87,7 @@ import BrainrotCardScreen from './src/screens/BrainrotCardScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import BreakModal from './src/components/BreakModal';
 import CelebrationOverlay from './src/components/CelebrationOverlay';
+import NotificationCenterModal from './src/components/NotificationCenterModal';
 import UsagePermissionModal from './src/components/UsagePermissionModal';
 import Icon from './src/components/Icon';
 
@@ -89,6 +119,24 @@ export default function App() {
   const [breakOpen, setBreakOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [celebration, setCelebration] = useState<Celebration | null>(null);
+  const [notificationStatus, setNotificationStatus] =
+    useState<NotificationStatusSnapshot>({
+      runtimePermissionGranted: Platform.OS !== 'android',
+      appNotificationsEnabled: false,
+      nudgesChannelEnabled: false,
+      remindersChannelEnabled: false,
+      statusCode: 'notifications_off',
+      quietHoursActiveNow: false,
+      sentKeysToday: [],
+    });
+  const [testNotificationFeedback, setTestNotificationFeedback] = useState<
+    string | null
+  >(null);
+  const [notificationInbox, setNotificationInbox] =
+    useState<NotificationInboxSnapshot>({ unreadCount: 0, items: [] });
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [highlightedUnreadIds, setHighlightedUnreadIds] = useState<string[]>([]);
+  const [scrollToLedgerRequestId, setScrollToLedgerRequestId] = useState(0);
 
   const appStateRef = useRef(appState);
   appStateRef.current = appState;
@@ -105,25 +153,78 @@ export default function App() {
     []
   );
 
+  const refreshNotificationInbox = useCallback(async () => {
+    const inbox = await fetchNotificationInbox();
+    setNotificationInbox(inbox);
+    return inbox;
+  }, []);
+
+  const refreshNotificationStatus = useCallback(async () => {
+    const [status] = await Promise.all([
+      fetchNotificationStatus(),
+      refreshNotificationInbox(),
+    ]);
+    setNotificationStatus(status);
+    if (status.sentKeysToday && status.sentKeysToday.length > 0) {
+      const todayKey = getLocalDateKey();
+      const existing = appStateRef.current.sentNotificationsByDate?.[todayKey] ?? [];
+      const missing = status.sentKeysToday.filter((k) => !existing.includes(k));
+      if (missing.length > 0) {
+        updateAndPersist((prev) => {
+          const prevKeys = prev.sentNotificationsByDate?.[todayKey] ?? [];
+          const merged = Array.from(new Set([...prevKeys, ...status.sentKeysToday]));
+          return {
+            ...prev,
+            sentNotificationsByDate: {
+              ...(prev.sentNotificationsByDate ?? {}),
+              [todayKey]: merged,
+            },
+          };
+        });
+      }
+    }
+    return status;
+  }, [updateAndPersist, refreshNotificationInbox]);
+
   const syncUsageStats = useCallback(
     async (showFeedbackToast = false) => {
       lastAutoRefreshAtRef.current = Date.now();
       const summary = await queryInstagramUsageSummary(7);
       setUsageSummary(summary);
+      const todayKey = getLocalDateKey();
       updateAndPersist((prev) => {
         let next = prev;
         if (summary.deviceName) {
           next = updateDeviceDefaultNameState(next, summary.deviceName);
         }
-        return {
+        const nextCached = selectCachedSummaryToPersist(
+          next.cachedUsageSummary,
+          summary,
+          next.consentStatus,
+          next.trackingEnabled
+        );
+        next = {
           ...next,
-          cachedUsageSummary: selectCachedSummaryToPersist(
-            next.cachedUsageSummary,
-            summary,
-            next.consentStatus,
-            next.trackingEnabled
-          ),
+          cachedUsageSummary: nextCached,
         };
+        const effLimit = getEffectiveDailyLimitMinutes(
+          next.dailyLimitMinutes,
+          next.settings.weekendBreathingRoom
+        );
+        const display = buildUsageDisplayState(
+          summary,
+          next.consentStatus,
+          next.trackingEnabled,
+          Date.now(),
+          nextCached
+        );
+        const linkedRes = syncUsageLinkedMissionsState(
+          next,
+          display,
+          effLimit,
+          todayKey
+        );
+        return linkedRes.nextState;
       });
       if (showFeedbackToast) {
         if (!summary.permissionGranted) {
@@ -148,15 +249,34 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [loaded, deviceInfo] = await Promise.all([
-        loadPersistedState(),
-        queryDeviceProfileInfo(),
-      ]);
+      const [loaded, deviceInfo, initialNotifStatus, initialInbox] =
+        await Promise.all([
+          loadPersistedState(),
+          queryDeviceProfileInfo(),
+          fetchNotificationStatus(),
+          fetchNotificationInbox(),
+        ]);
       if (!mounted) return;
-      const hydratedState = updateDeviceDefaultNameState(
+      const todayKeyOnBoot = getLocalDateKey();
+      let hydratedState = updateDeviceDefaultNameState(
         loaded,
         deviceInfo.deviceName
       );
+      if (initialNotifStatus.sentKeysToday.length > 0) {
+        const prevKeys =
+          hydratedState.sentNotificationsByDate?.[todayKeyOnBoot] ?? [];
+        hydratedState = {
+          ...hydratedState,
+          sentNotificationsByDate: {
+            ...(hydratedState.sentNotificationsByDate ?? {}),
+            [todayKeyOnBoot]: Array.from(
+              new Set([...prevKeys, ...initialNotifStatus.sentKeysToday])
+            ),
+          },
+        };
+      }
+      setNotificationStatus(initialNotifStatus);
+      setNotificationInbox(initialInbox);
       setAppState(hydratedState);
       if (hydratedState !== loaded) {
         void savePersistedState(hydratedState);
@@ -170,32 +290,60 @@ export default function App() {
       const liveSummary = await queryInstagramUsageSummary(7);
       if (!mounted) return;
       setUsageSummary(liveSummary);
+      const todayKey = getLocalDateKey();
       updateAndPersist((prev) => {
         const withDevice = liveSummary.deviceName
           ? updateDeviceDefaultNameState(prev, liveSummary.deviceName)
           : prev;
-        return {
+        const nextCached = selectCachedSummaryToPersist(
+          withDevice.cachedUsageSummary,
+          liveSummary,
+          withDevice.consentStatus,
+          withDevice.trackingEnabled
+        );
+        const withCache: PersistedAppState = {
           ...withDevice,
-          cachedUsageSummary: selectCachedSummaryToPersist(
-            withDevice.cachedUsageSummary,
-            liveSummary,
-            withDevice.consentStatus,
-            withDevice.trackingEnabled
-          ),
+          cachedUsageSummary: nextCached,
         };
+        const effLimit = getEffectiveDailyLimitMinutes(
+          withCache.dailyLimitMinutes,
+          withCache.settings.weekendBreathingRoom
+        );
+        const display = buildUsageDisplayState(
+          liveSummary,
+          withCache.consentStatus,
+          withCache.trackingEnabled,
+          Date.now(),
+          nextCached
+        );
+        return syncUsageLinkedMissionsState(
+          withCache,
+          display,
+          effLimit,
+          todayKey
+        ).nextState;
       });
 
       // Prompt consent modal on initial launch if still pending
       if (hydratedState.consentStatus === 'pending') {
         setPermissionModalOpen(true);
       }
+      void refreshNotificationStatus();
     })();
     return () => {
       mounted = false;
     };
-  }, [updateAndPersist]);
+  }, [updateAndPersist, refreshNotificationStatus]);
 
-  // Re-query UsageStats automatically when returning from Android system Usage Access settings
+  // Listen for native Android notification deliveries in real time
+  useEffect(() => {
+    const unsubscribe = subscribeToNativeNotificationUpdates(() => {
+      void refreshNotificationInbox();
+    });
+    return unsubscribe;
+  }, [refreshNotificationInbox]);
+
+  // Re-query UsageStats and Notification status automatically when returning from Android settings
   useEffect(() => {
     const sub = AppState.addEventListener(
       'change',
@@ -205,11 +353,12 @@ export default function App() {
           if (now - lastAutoRefreshAtRef.current >= 2500) {
             void syncUsageStats(false);
           }
+          void refreshNotificationStatus();
         }
       }
     );
     return () => sub.remove();
-  }, [hydrated, syncUsageStats]);
+  }, [hydrated, syncUsageStats, refreshNotificationStatus]);
 
   // Toast animation
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -249,19 +398,6 @@ export default function App() {
   }, [toast, toastOpacity, toastTranslateY]);
 
   const dateKey = getLocalDateKey();
-  const missions = getMissionsForDate(appState, dateKey);
-  const completedMissions = missions.filter((m) => m.done).length;
-  const dailyChest = getDailyChestForDate(appState);
-  const totalXp = calculateTotalXp(appState);
-  const earnedTodayXp = calculateEarnedXpForDate(appState, dateKey);
-  const badges = getBadges(
-    missions,
-    appState.completedFocusBreaks,
-    appState.unlockedBadges
-  );
-
-  const identity = resolveEffectiveDisplayName(appState.profile);
-
   const effectiveLimitMinutes = getEffectiveDailyLimitMinutes(
     appState.dailyLimitMinutes,
     appState.settings.weekendBreathingRoom
@@ -275,6 +411,32 @@ export default function App() {
     appState.cachedUsageSummary
   );
 
+  const missions = getMissionsForDate(
+    appState,
+    dateKey,
+    usageDisplay,
+    effectiveLimitMinutes
+  );
+  const completedMissions = missions.filter((m) => m.done).length;
+  const dailyChest = getDailyChestForDate(appState);
+  const totalXp = calculateTotalXp(appState);
+  const earnedTodayXp = calculateEarnedXpForDate(appState, dateKey);
+  const badges = getBadges(
+    missions,
+    appState.completedFocusBreaks,
+    appState.unlockedBadges
+  );
+  const weeklyQuestState = getWeeklyQuestState(appState, dateKey);
+  const xpLedger = getXpLedgerEntries(appState);
+  const ledgerConsistency = verifyXpLedgerConsistency(appState);
+
+  const todayMoodLog = appState.moodLogsByDate?.[dateKey] ?? null;
+  const recentMoodLogs = Object.values(appState.moodLogsByDate ?? {}).sort((a, b) =>
+    b.dateKey.localeCompare(a.dateKey)
+  );
+
+  const identity = resolveEffectiveDisplayName(appState.profile);
+
   const limitProgress = calculateLimitProgress(
     usageSummary?.todayForegroundMs ?? null,
     effectiveLimitMinutes,
@@ -286,8 +448,71 @@ export default function App() {
     effectiveLimitMinutes,
     usageDisplay.hasVerifiedEstimate,
     completedMissions,
-    appState.completedFocusBreaks
+    appState.completedFocusBreaks,
+    todayMoodLog
   );
+  const playerLevel = calculatePlayerLevel(totalXp);
+  const badgesUnlockedCount = badges.filter((b) => b.unlocked).length;
+  const weeklySummary = buildWeeklyAchievementSummary(appState, dateKey);
+
+  // Sync notification configuration and schedules to native Android WorkManager + AlarmManager
+  useEffect(() => {
+    if (!hydrated) return;
+    const anyNonLimitMissionDoneToday = missions.some(
+      (m) => m.done && m.id !== 'set-scroll-limit'
+    );
+    const streakActiveToday = isDateActiveForStreak(appState, dateKey, usageDisplay);
+    void syncNativeNotificationConfig({
+      dailyGentleNudge: appState.settings.dailyGentleNudge,
+      missionReminders: appState.settings.missionReminders,
+      streakReminders: appState.settings.streakReminders,
+      weekendBreathingRoom: appState.settings.weekendBreathingRoom,
+      consentAccepted: appState.consentStatus === 'accepted',
+      trackingEnabled: appState.trackingEnabled,
+      dailyLimitMinutes: appState.dailyLimitMinutes,
+      eveningReminderHour: appState.settings.eveningReminderHour ?? 19,
+      eveningReminderMinute: appState.settings.eveningReminderMinute ?? 0,
+      streakReminderHour: appState.settings.streakReminderHour ?? 21,
+      streakReminderMinute: appState.settings.streakReminderMinute ?? 0,
+      quietHoursEnabled: appState.settings.quietHoursEnabled !== false,
+      quietStartHour: appState.settings.quietStartHour ?? 22,
+      quietEndHour: appState.settings.quietEndHour ?? 8,
+      currentStreak: appState.streak?.currentStreak ?? 0,
+      syncedDateKey: dateKey,
+      anyNonLimitMissionDoneToday,
+      streakActiveToday,
+      sentKeysToday: appState.sentNotificationsByDate?.[dateKey] ?? [],
+    });
+  }, [hydrated, appState, dateKey, missions, usageDisplay]);
+
+  // Evaluate and fire pending local notifications once per day when thresholds are met
+  useEffect(() => {
+    if (!hydrated) return;
+    const evalRes = evaluatePendingNotifications(
+      appStateRef.current,
+      usageDisplay,
+      limitProgress,
+      dateKey
+    );
+    if (evalRes.notifications.length > 0) {
+      updateAndPersist(() => evalRes.nextState);
+      void (async () => {
+        const allowed = await checkAndRequestNotificationPermission();
+        if (!allowed) return;
+        for (const n of evalRes.notifications) {
+          await sendLocalNotification(n.id, n.title, n.body);
+        }
+        await refreshNotificationStatus();
+      })();
+    }
+  }, [
+    hydrated,
+    usageDisplay,
+    limitProgress,
+    dateKey,
+    updateAndPersist,
+    refreshNotificationStatus,
+  ]);
 
   function handleSaveDisplayName(rawName: string | null) {
     const res = updateCustomDisplayNameState(appStateRef.current, rawName);
@@ -300,7 +525,47 @@ export default function App() {
   }
 
   function handleToggleMission(index: number) {
-    const result = toggleMissionState(appStateRef.current, index, dateKey);
+    const result = toggleMissionState(
+      appStateRef.current,
+      index,
+      dateKey,
+      false,
+      usageDisplay,
+      effectiveLimitMinutes
+    );
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleClaimWeeklyQuest(questId: WeeklyQuestId) {
+    const result = claimWeeklyQuestState(appStateRef.current, questId, dateKey);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleRecoverStreak() {
+    const result = recoverStreakState(appStateRef.current, dateKey);
+    updateAndPersist(() => result.nextState);
+    if (result.celebration) {
+      setCelebration(result.celebration);
+    }
+    if (result.toastMessage) {
+      setToast(result.toastMessage);
+    }
+  }
+
+  function handleLogMood(moodId: MoodId, note: string) {
+    const result = logDailyMoodState(appStateRef.current, moodId, note, dateKey);
     updateAndPersist(() => result.nextState);
     if (result.celebration) {
       setCelebration(result.celebration);
@@ -321,12 +586,16 @@ export default function App() {
     }
   }
 
-  function handleCompleteFocusBreak(sessionId: string) {
+  function handleCompleteFocusBreak(
+    sessionId: string,
+    durationMinutes: number = 10
+  ) {
     setBreakOpen(false);
     const result = completeFocusBreakState(
       appStateRef.current,
       sessionId,
-      dateKey
+      dateKey,
+      durationMinutes
     );
     updateAndPersist(() => result.nextState);
     if (result.celebration) {
@@ -419,13 +688,23 @@ export default function App() {
       const limitIdx = currentMissions.findIndex(
         (m) => m.id === 'set-scroll-limit'
       );
-      let next = {
+      let next: PersistedAppState = {
         ...prev,
         dailyLimitMinutes: clamped,
       };
       if (limitIdx >= 0 && !currentMissions[limitIdx].done) {
         next = toggleMissionState(next, limitIdx, dateKey, true).nextState;
       }
+      const effLimit = getEffectiveDailyLimitMinutes(
+        clamped,
+        next.settings.weekendBreathingRoom
+      );
+      next = syncUsageLinkedMissionsState(
+        next,
+        usageDisplay,
+        effLimit,
+        dateKey
+      ).nextState;
       return next;
     });
     setToast(
@@ -435,10 +714,13 @@ export default function App() {
 
   function handleToggleSetting(key: keyof UserSettings) {
     updateAndPersist((prev) => {
-      const nextVal = !prev.settings[key];
+      const prevVal =
+        key === 'achievementNotifications' || key === 'quietHoursEnabled'
+          ? prev.settings[key] !== false
+          : Boolean(prev.settings[key]);
       const nextSettings = {
         ...prev.settings,
-        [key]: nextVal,
+        [key]: !prevVal,
       };
       return {
         ...prev,
@@ -448,10 +730,90 @@ export default function App() {
     setToast('Preference saved locally.');
   }
 
+  function handleUpdateSettingsPatch(patch: Partial<UserSettings>) {
+    updateAndPersist((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        ...patch,
+      },
+    }));
+    setToast('Schedule updated.');
+  }
+
   function handleClearLocalHistory() {
     updateAndPersist((prev) => clearLocalHistoryState(prev, dateKey));
+    void clearNativeNotificationHistory().then((emptyInbox) => {
+      setNotificationInbox(emptyInbox);
+    });
     setToast('Local usage cache and mission history cleared.');
   }
+
+  async function handleExportUserData() {
+    const exported = serializeUserDataExportJson(appStateRef.current);
+    if (!exported.ok) {
+      setToast(exported.error || 'Could not generate JSON export.');
+      return;
+    }
+    try {
+      await Share.share({
+        title: exported.filename,
+        message: exported.json,
+      });
+      setToast(`Exported ${exported.filename} (${exported.json.length} bytes).`);
+    } catch {
+      setToast('Export ready in preview—share sheet was closed.');
+    }
+  }
+
+  async function handleSendTestNotification() {
+    await checkAndRequestNotificationPermission();
+    const status = await refreshNotificationStatus();
+    if (status.statusCode === 'permission_required') {
+      const msg =
+        'Android notification permission is currently denied. Tap "Open Android Notification Settings" to allow ROT notifications.';
+      setTestNotificationFeedback(msg);
+      setToast('Notification permission required.');
+      return;
+    }
+    if (status.statusCode === 'notifications_off') {
+      const msg =
+        'Notifications are turned off for ROT in Android system settings.';
+      setTestNotificationFeedback(msg);
+      setToast('App notifications are disabled in Android.');
+      return;
+    }
+    if (status.statusCode === 'channel_disabled') {
+      const msg =
+        'The ROT Wellbeing Nudges channel is muted/disabled in Android settings.';
+      setTestNotificationFeedback(msg);
+      setToast('Wellbeing Nudges channel is disabled.');
+      return;
+    }
+
+    const body =
+      limitProgress.nudgeMessage ||
+      `Your daily scroll target is ${limitProgress.limitFormatted}. Keep choosing balance!`;
+    const sent = await sendLocalNotification(1999, 'ROT Gentle Nudge', body);
+    if (sent) {
+      await refreshNotificationInbox();
+      const timeLabel = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      setTestNotificationFeedback(
+        `Delivered to Android notification shade at ${timeLabel}.`
+      );
+      setToast('Test notification sent to your Android notification shade.');
+    } else {
+      setTestNotificationFeedback(
+        'Could not post notification—verify Android notification channel settings.'
+      );
+      setToast('Notification blocked by Android settings.');
+    }
+  }
+
+  const exportPreviewResult = serializeUserDataExportJson(appState);
 
   function renderScreen() {
     switch (activeView) {
@@ -479,6 +841,11 @@ export default function App() {
             showGentleNudge={appState.settings.dailyGentleNudge}
             onUsageAction={handleUsageAction}
             onRefreshUsage={() => void syncUsageStats(true)}
+            streak={appState.streak}
+            onRecoverStreak={handleRecoverStreak}
+            todayMoodLog={todayMoodLog}
+            recentMoodLogs={recentMoodLogs}
+            onLogMood={handleLogMood}
           />
         );
       case 'Missions':
@@ -487,6 +854,12 @@ export default function App() {
             missions={missions}
             onMissionClick={handleToggleMission}
             earnedXp={earnedTodayXp}
+            totalXp={totalXp}
+            weeklyQuestState={weeklyQuestState}
+            onClaimWeeklyQuest={handleClaimWeeklyQuest}
+            xpLedger={xpLedger}
+            ledgerConsistent={ledgerConsistency.consistent}
+            scrollToLedgerRequestId={scrollToLedgerRequestId}
           />
         );
       case 'Badges':
@@ -512,9 +885,22 @@ export default function App() {
           <BrainrotCardScreen
             displayName={identity.displayName}
             totalXp={totalXp}
+            playerLevel={playerLevel}
+            currentStreak={appState.streak.currentStreak}
+            brainrotScore={brainrotIndex.score}
             archetypeTitle={brainrotIndex.archetypeTitle}
             archetypeDesc={brainrotIndex.archetypeDesc}
+            badgesUnlockedCount={badgesUnlockedCount}
+            weeklySummary={weeklySummary}
             privateMode={appState.settings.privateMode}
+            selectedCardType={appState.selectedCardType ?? 'archetype'}
+            selectedFormat={appState.selectedCardFormat ?? 'feed'}
+            onSelectCardType={(cardType: CardType) =>
+              updateAndPersist((prev) => ({ ...prev, selectedCardType: cardType }))
+            }
+            onSelectFormat={(format: CardExportFormat) =>
+              updateAndPersist((prev) => ({ ...prev, selectedCardFormat: format }))
+            }
             onEditName={() => setActiveView('Settings')}
             onToast={setToast}
           />
@@ -532,6 +918,8 @@ export default function App() {
             settings={appState.settings}
             usageSummary={usageSummary}
             usageDisplay={usageDisplay}
+            notificationStatus={notificationStatus}
+            testNotificationFeedback={testNotificationFeedback}
             onToggleTracking={(nextEnabled) => {
               updateAndPersist((prev) => ({
                 ...prev,
@@ -555,133 +943,198 @@ export default function App() {
                 );
               }
             }}
+            onOpenNotificationSettings={async (channelId) => {
+              const opened = await openAndroidNotificationSettings(channelId ?? null);
+              if (!opened) {
+                setToast('Open Android Settings > Apps > ROT > Notifications.');
+              }
+            }}
+            onRefreshNotificationStatus={() => {
+              void refreshNotificationStatus().then(() => {
+                setToast('Notification status refreshed.');
+              });
+            }}
             onChangeDailyLimit={handleChangeDailyLimit}
             onToggleSetting={handleToggleSetting}
+            onUpdateSettingsPatch={handleUpdateSettingsPatch}
             onClearLocalHistory={handleClearLocalHistory}
             onRefreshUsage={() => void syncUsageStats(true)}
+            onExportUserData={() => void handleExportUserData()}
+            exportJsonPreview={exportPreviewResult.json}
+            onSendTestNotification={() => void handleSendTestNotification()}
           />
         );
     }
   }
 
+  function handleOpenNotificationCenter() {
+    const unreadIds = notificationInbox.items
+      .filter((item) => !item.read)
+      .map((item) => item.id);
+    setHighlightedUnreadIds(unreadIds);
+    setNotificationCenterOpen(true);
+    void markAllNativeNotificationsRead().then((updatedInbox) => {
+      setNotificationInbox(updatedInbox);
+    });
+  }
+
+  function handleOpenXpLedger() {
+    setActiveView('Missions');
+    setScrollToLedgerRequestId((id) => id + 1);
+  }
+
+  const unreadBadgeText = formatUnreadBadgeCount(notificationInbox.unreadCount);
+
   return (
     <SafeAreaProvider>
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
-      <StatusBar barStyle="dark-content" />
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
+        <StatusBar barStyle="dark-content" />
 
-      {/* Top Bar */}
-      <View style={styles.topBar}>
-        <View style={styles.brandLockup}>
-          <View style={styles.brandMark}>
-            <Icon name="brain" size={16} color={COLORS.white} />
+        {/* Top Bar */}
+        <View style={styles.topBar}>
+          <View style={styles.brandLockup}>
+            <View style={styles.brandMark}>
+              <Icon name="brain" size={16} color={COLORS.white} />
+            </View>
+            <View>
+              <Text style={styles.brandName}>ROT.</Text>
+              <Text style={styles.brandCaption}>The Brainrot Club</Text>
+            </View>
           </View>
-          <View>
-            <Text style={styles.brandName}>ROT.</Text>
-            <Text style={styles.brandCaption}>The Brainrot Club</Text>
-          </View>
-        </View>
-        <View style={styles.topActions}>
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={() =>
-              setToast(
-                limitProgress.nudgeMessage ||
-                  'You are all caught up. Your brain approves.'
-              )
-            }
-          >
-            <Feather name="bell" size={17} color={COLORS.purple} />
-          </TouchableOpacity>
-          <View style={styles.xpPill}>
-            <Feather name="zap" size={13} color={COLORS.pink} />
-            <Text style={styles.xpText}>
-              <Text style={styles.xpBold}>{totalXp}</Text> XP
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Screen Content */}
-      <View style={styles.screenContainer}>{renderScreen()}</View>
-
-      {/* Bottom Tab Bar */}
-      <View style={styles.tabBar}>
-        {tabs.map((tab) => {
-          const isActive = activeView === tab.key;
-          const pendingMissions = missions.length - completedMissions;
-          return (
+          <View style={styles.topActions}>
             <TouchableOpacity
-              key={tab.key}
-              style={styles.tabItem}
-              onPress={() => setActiveView(tab.key)}
-              activeOpacity={0.7}
+              style={styles.iconButton}
+              onPress={handleOpenNotificationCenter}
+              activeOpacity={0.75}
+              accessibilityRole="button"
+              accessibilityLabel={
+                unreadBadgeText
+                  ? `Notifications (${unreadBadgeText} unread)`
+                  : 'Notifications'
+              }
             >
-              <View style={[styles.tabIconWrap, isActive && styles.tabIconWrapActive]}>
-                <Feather
-                  name={tab.icon as any}
-                  size={18}
-                  color={isActive ? COLORS.white : '#8d7e9c'}
-                />
-              </View>
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                {tab.label}
-              </Text>
-              {tab.key === 'Missions' && pendingMissions > 0 && (
-                <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
-                  <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
-                    {pendingMissions}
-                  </Text>
+              <Feather name="bell" size={17} color={COLORS.purple} />
+              {unreadBadgeText !== null && (
+                <View style={styles.notifBadge}>
+                  <Text style={styles.notifBadgeText}>{unreadBadgeText}</Text>
                 </View>
               )}
             </TouchableOpacity>
-          );
-        })}
-      </View>
+            <TouchableOpacity
+              style={styles.xpPill}
+              onPress={handleOpenXpLedger}
+              activeOpacity={0.72}
+              accessibilityRole="button"
+              accessibilityLabel={`Brain Bank XP: ${totalXp} XP. Tap to view XP Ledger`}
+            >
+              <Feather name="zap" size={13} color={COLORS.pink} />
+              <Text style={styles.xpText}>
+                <Text style={styles.xpBold}>{totalXp}</Text> XP
+              </Text>
+              <Feather name="chevron-right" size={11} color={COLORS.pink} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
-      {/* Usage Access & Consent Modal */}
-      <UsagePermissionModal
-        visible={permissionModalOpen}
-        consentStatus={appState.consentStatus}
-        permissionGranted={Boolean(usageSummary?.permissionGranted)}
-        instagramInstalled={Boolean(usageSummary?.instagramInstalled)}
-        onAcceptAndOpenSettings={handleAcceptAndOpenSettings}
-        onAcceptWithoutSettings={handleAcceptWithoutSettings}
-        onDeclineOrLater={handleDeclineOrLater}
-        onClose={() => setPermissionModalOpen(false)}
-      />
+        {/* Screen Content */}
+        <View style={styles.screenContainer}>{renderScreen()}</View>
 
-      {/* Break Modal */}
-      <BreakModal
-        visible={breakOpen}
-        completedBreaksCount={appState.completedFocusBreaks}
-        onClose={() => setBreakOpen(false)}
-        onCompleteBreak={handleCompleteFocusBreak}
-      />
+        {/* Bottom Tab Bar */}
+        <View style={styles.tabBar}>
+          {tabs.map((tab) => {
+            const isActive = activeView === tab.key;
+            const pendingMissions = missions.length - completedMissions;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={styles.tabItem}
+                onPress={() => setActiveView(tab.key)}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.tabIconWrap, isActive && styles.tabIconWrapActive]}>
+                  <Feather
+                    name={tab.icon as any}
+                    size={18}
+                    color={isActive ? COLORS.white : '#8d7e9c'}
+                  />
+                </View>
+                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+                  {tab.label}
+                </Text>
+                {tab.key === 'Missions' && pendingMissions > 0 && (
+                  <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
+                    <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
+                      {pendingMissions}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
-      {/* Celebration Overlay */}
-      {celebration && (
-        <CelebrationOverlay
-          celebration={celebration}
-          onClose={() => setCelebration(null)}
+        {/* Usage Access & Consent Modal */}
+        <UsagePermissionModal
+          visible={permissionModalOpen}
+          consentStatus={appState.consentStatus}
+          permissionGranted={Boolean(usageSummary?.permissionGranted)}
+          instagramInstalled={Boolean(usageSummary?.instagramInstalled)}
+          onAcceptAndOpenSettings={handleAcceptAndOpenSettings}
+          onAcceptWithoutSettings={handleAcceptWithoutSettings}
+          onDeclineOrLater={handleDeclineOrLater}
+          onClose={() => setPermissionModalOpen(false)}
         />
-      )}
 
-      {/* Toast */}
-      {toast !== '' && (
-        <Animated.View
-          style={[
-            styles.toast,
-            {
-              opacity: toastOpacity,
-              transform: [{ translateY: toastTranslateY }],
-            },
-          ]}
-        >
-          <Feather name="zap" size={14} color={COLORS.white} />
-          <Text style={styles.toastText}>{toast}</Text>
-        </Animated.View>
-      )}
-    </SafeAreaView>
+        {/* Break Modal */}
+        <BreakModal
+          visible={breakOpen}
+          completedBreaksCount={appState.completedFocusBreaks}
+          onClose={() => setBreakOpen(false)}
+          onCompleteBreak={handleCompleteFocusBreak}
+        />
+
+        {/* Celebration Overlay */}
+        {celebration && (
+          <CelebrationOverlay
+            celebration={celebration}
+            onClose={() => setCelebration(null)}
+          />
+        )}
+
+        {/* Notification Center Modal */}
+        <NotificationCenterModal
+          visible={notificationCenterOpen}
+          items={notificationInbox.items}
+          highlightedUnreadIds={highlightedUnreadIds}
+          notificationStatus={notificationStatus}
+          onClearAll={() => {
+            void clearNativeNotificationHistory().then((emptyInbox) => {
+              setNotificationInbox(emptyInbox);
+              setHighlightedUnreadIds([]);
+            });
+            setToast('Notification history cleared.');
+          }}
+          onOpenSettings={() => setActiveView('Settings')}
+          onClose={() => setNotificationCenterOpen(false)}
+        />
+
+        {/* Toast */}
+        {toast !== '' && (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.toast,
+              {
+                opacity: toastOpacity,
+                transform: [{ translateY: toastTranslateY }],
+              },
+            ]}
+          >
+            <Feather name="zap" size={14} color={COLORS.white} />
+            <Text style={styles.toastText}>{toast}</Text>
+          </Animated.View>
+        )}
+      </SafeAreaView>
     </SafeAreaProvider>
   );
 }
@@ -749,15 +1202,38 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
+    position: 'relative',
+  },
+  notifBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -5,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: '#ef4444',
+    borderWidth: 1.5,
+    borderColor: COLORS.cream,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  notifBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: COLORS.white,
+    includeFontPadding: false,
   },
   xpPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     paddingVertical: 7,
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     borderRadius: 30,
     backgroundColor: COLORS.palePink,
+    borderWidth: 1,
+    borderColor: '#f4c0d8',
   },
   xpText: {
     fontSize: 11,
@@ -798,67 +1274,62 @@ const styles = StyleSheet.create({
   },
   tabIconWrapActive: {
     backgroundColor: COLORS.purple,
-    shadowColor: '#e3bde0',
-    shadowOpacity: 0.5,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
   },
   tabLabel: {
-    fontSize: 9,
-    fontWeight: '600',
+    fontSize: 10,
+    fontWeight: '700',
     color: '#8d7e9c',
-    marginTop: 3,
+    marginTop: 2,
   },
   tabLabelActive: {
     color: COLORS.purple,
-    fontWeight: '700',
   },
   tabBadge: {
     position: 'absolute',
-    top: 0,
-    right: '22%' as any,
-    minWidth: 16,
-    height: 16,
+    top: 2,
+    right: 10,
+    minWidth: 15,
+    height: 15,
     borderRadius: 8,
-    backgroundColor: '#f9dfe9',
+    backgroundColor: '#f1e4f3',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
+    paddingHorizontal: 3,
   },
   tabBadgeActive: {
-    backgroundColor: COLORS.pink,
+    backgroundColor: COLORS.yellow,
   },
   tabBadgeText: {
     fontSize: 9,
-    fontWeight: '700',
-    color: COLORS.pink,
+    fontWeight: '800',
+    color: COLORS.purple,
   },
   tabBadgeTextActive: {
-    color: COLORS.white,
+    color: COLORS.purple,
   },
 
   // Toast
   toast: {
     position: 'absolute',
-    bottom: 100,
+    bottom: Platform.OS === 'ios' ? 98 : 88,
     left: 20,
     right: 20,
+    backgroundColor: COLORS.ink,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 13,
-    paddingHorizontal: 18,
-    borderRadius: 30,
-    backgroundColor: COLORS.purple,
-    shadowColor: '#2a1648',
-    shadowOpacity: 0.4,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 8,
+    gap: 10,
+    shadowColor: '#241434',
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
   toastText: {
+    flex: 1,
+    color: COLORS.white,
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.white,
-    flex: 1,
   },
 });

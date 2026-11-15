@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,9 +6,19 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
-import { DailyChest, InstagramUsageSummary, Mission } from '../constants/types';
+import { MOOD_OPTIONS } from '../constants/data';
+import {
+  DailyChest,
+  InstagramUsageSummary,
+  Mission,
+  MoodId,
+  MoodLogEntry,
+  StreakState,
+} from '../constants/types';
 import {
   BrainrotIndexSummary,
   formatMinutesAsHoursAndMinutes,
@@ -16,6 +26,7 @@ import {
   getGreetingForHour,
   LimitProgressSummary,
   MAX_DISPLAY_NAME_LENGTH,
+  MAX_MOOD_NOTE_LENGTH,
   UsageDisplayState,
 } from '../utils/domainLogic';
 import MissionRow from '../components/MissionRow';
@@ -44,6 +55,11 @@ type Props = {
   showGentleNudge: boolean;
   onUsageAction: () => void;
   onRefreshUsage: () => void;
+  streak: StreakState;
+  onRecoverStreak: () => void;
+  todayMoodLog: MoodLogEntry | null;
+  recentMoodLogs: MoodLogEntry[];
+  onLogMood: (moodId: MoodId, note: string) => void;
 };
 
 export default function TodayScreen({
@@ -67,15 +83,35 @@ export default function TodayScreen({
   showGentleNudge,
   onUsageAction,
   onRefreshUsage,
+  streak,
+  onRecoverStreak,
+  todayMoodLog,
+  recentMoodLogs,
+  onLogMood,
 }: Props) {
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(customDisplayName ?? displayName);
+  const [moodDrawerOpen, setMoodDrawerOpen] = useState(false);
+  const [selectedMoodId, setSelectedMoodId] = useState<MoodId>(
+    todayMoodLog?.moodId ?? 'balanced'
+  );
+  const [moodNote, setMoodNote] = useState(todayMoodLog?.note ?? '');
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const moodCardYRef = useRef(0);
 
   useEffect(() => {
     if (!editingName) {
       setDraftName(customDisplayName ?? displayName);
     }
   }, [customDisplayName, displayName, editingName]);
+
+  useEffect(() => {
+    if (todayMoodLog) {
+      setSelectedMoodId(todayMoodLog.moodId);
+      setMoodNote(todayMoodLog.note);
+    }
+  }, [todayMoodLog]);
 
   const dateHeader = formatReadableDateHeader();
   const greeting = getGreetingForHour();
@@ -119,11 +155,19 @@ export default function TodayScreen({
     usageDisplay.minutes !== null;
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
       style={styles.scroll}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'android' ? 80 : 0}
     >
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: 48 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
       {/* Welcome */}
       <View style={styles.welcomeRow}>
         <Text style={styles.eyebrow}>{dateHeader}</Text>
@@ -210,15 +254,157 @@ export default function TodayScreen({
         </Text>
       </View>
 
-      {/* Mood Badge */}
-      <View style={styles.moodBadge}>
-        <View style={styles.moodFace}>
-          <Text style={styles.moodEmoji}>{brainrotIndex.moodEmoji}</Text>
+      {/* Streak & Grace-Day Card */}
+      <View style={styles.streakCard}>
+        <View style={styles.streakIconWrap}>
+          <Icon name="flame" size={18} color={COLORS.pink} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.moodLabel}>Brain mood</Text>
-          <Text style={styles.moodValue}>{brainrotIndex.moodValue}</Text>
+          <View style={styles.streakTopRow}>
+            <Text style={styles.streakTitle}>
+              {streak.currentStreak} day{streak.currentStreak === 1 ? '' : 's'} streak
+            </Text>
+            <View style={styles.gracePill}>
+              <Icon name="shield-check" size={11} color="#2d9364" />
+              <Text style={styles.gracePillText}>
+                {streak.graceDaysRemaining}/{streak.maxGraceDaysPerWeek} grace day left
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.streakSub}>
+            Best: {streak.longestStreak}d · Missing Usage Access never breaks your streak
+          </Text>
+          {streak.recoveryNeeded && streak.previousStreakBeforeBreak > 0 && (
+            <TouchableOpacity
+              style={styles.recoverStreakBtn}
+              onPress={onRecoverStreak}
+              activeOpacity={0.8}
+            >
+              <Icon name="refresh" size={12} color={COLORS.white} />
+              <Text style={styles.recoverStreakBtnText}>
+                Recover {streak.previousStreakBeforeBreak}-day streak (+25 XP)
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
+      </View>
+
+      {/* Mood Badge & Interactive Mood Logger */}
+      <View
+        style={styles.moodContainer}
+        onLayout={(e) => {
+          moodCardYRef.current = e.nativeEvent.layout.y;
+        }}
+      >
+        <View style={styles.moodBadgeRow}>
+          <View style={styles.moodFace}>
+            <Text style={styles.moodEmoji}>{brainrotIndex.moodEmoji}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.moodLabel}>
+              Brain mood {todayMoodLog ? '· Checked in today' : ''}
+            </Text>
+            <Text style={styles.moodValue}>{brainrotIndex.moodValue}</Text>
+            {todayMoodLog?.note ? (
+              <Text style={styles.moodSavedNote}>“{todayMoodLog.note}”</Text>
+            ) : null}
+          </View>
+          <TouchableOpacity
+            style={styles.logMoodChip}
+            onPress={() => setMoodDrawerOpen((prev) => !prev)}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.logMoodChipText}>
+              {moodDrawerOpen ? 'Close' : todayMoodLog ? 'Update' : 'Check in'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {moodDrawerOpen && (
+          <View style={styles.moodDrawer}>
+            <Text style={styles.moodDrawerTitle}>How is your brain feeling today?</Text>
+            <View style={styles.moodOptionsRow}>
+              {MOOD_OPTIONS.map((opt) => {
+                const active = selectedMoodId === opt.id;
+                return (
+                  <TouchableOpacity
+                    key={opt.id}
+                    style={[
+                      styles.moodOptionPill,
+                      active && styles.moodOptionPillActive,
+                    ]}
+                    onPress={() => setSelectedMoodId(opt.id)}
+                    activeOpacity={0.8}
+                  >
+                    <Text
+                      style={[
+                        styles.moodOptionEmoji,
+                        active && { color: COLORS.white },
+                      ]}
+                    >
+                      {opt.emoji}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.moodOptionText,
+                        active && styles.moodOptionTextActive,
+                      ]}
+                    >
+                      {opt.shortLabel}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <TextInput
+              style={styles.moodNoteInput}
+              value={moodNote}
+              onChangeText={setMoodNote}
+              maxLength={MAX_MOOD_NOTE_LENGTH}
+              placeholder="One thing you want to make time for today (optional)..."
+              placeholderTextColor="#a395b2"
+              returnKeyType="done"
+              onFocus={() => {
+                setTimeout(() => {
+                  scrollRef.current?.scrollTo({
+                    y: Math.max(0, moodCardYRef.current - 12),
+                    animated: true,
+                  });
+                }, 140);
+              }}
+            />
+            <View style={styles.moodDrawerFooter}>
+              <Text style={styles.moodDrawerHint}>
+                Completes “Do the brain check-in” (+25 XP)
+              </Text>
+              <TouchableOpacity
+                style={styles.moodSaveBtn}
+                onPress={() => {
+                  onLogMood(selectedMoodId, moodNote);
+                  setMoodDrawerOpen(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.moodSaveBtnText}>Save mood</Text>
+              </TouchableOpacity>
+            </View>
+
+            {recentMoodLogs.length > 0 && (
+              <View style={styles.moodHistoryWrap}>
+                <Text style={styles.moodHistoryTitle}>Recent mood check-ins</Text>
+                {recentMoodLogs.slice(0, 3).map((entry) => (
+                  <View key={entry.dateKey} style={styles.moodHistoryItem}>
+                    <Text style={styles.moodHistoryDate}>{entry.dateKey}</Text>
+                    <Text style={styles.moodHistoryValue}>
+                      {entry.emoji} {entry.label}
+                      {entry.note ? ` — “${entry.note}”` : ''}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
       </View>
 
       {/* Usage Card */}
@@ -350,13 +536,24 @@ export default function TodayScreen({
         </View>
       )}
 
-      {/* Brainrot Index */}
+      {/* Brainrot Index & Score Breakdown */}
       <View style={styles.indexCard}>
         <View style={styles.indexTop}>
           <Text style={styles.eyebrow}>BRAINROT INDEX</Text>
-          <View style={styles.trendBadge}>
-            <Icon name="bar-chart" size={14} color={COLORS.green} />
-            <Text style={styles.trendText}>{brainrotIndex.trendText}</Text>
+          <View style={styles.indexTopRight}>
+            <View style={styles.trendBadge}>
+              <Icon name="bar-chart" size={14} color={COLORS.green} />
+              <Text style={styles.trendText}>{brainrotIndex.trendText}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.breakdownToggleBtn}
+              onPress={() => setShowBreakdown((prev) => !prev)}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.breakdownToggleText}>
+                {showBreakdown ? 'Hide details' : 'Breakdown'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
         <Text style={styles.indexScore}>
@@ -373,6 +570,34 @@ export default function TodayScreen({
           <Text style={styles.scaleText}>More scroll</Text>
           <Text style={styles.scaleText}>More soul</Text>
         </View>
+
+        {showBreakdown && (
+          <View style={styles.breakdownPanel}>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownKey}>Scroll vs. target base</Text>
+              <Text style={styles.breakdownVal}>
+                {brainrotIndex.breakdown.usageRatioPercent !== null
+                  ? `${brainrotIndex.breakdown.baseScore} pts (${brainrotIndex.breakdown.usageRatioPercent}% of target)`
+                  : 'Needs Usage Access'}
+              </Text>
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownKey}>Daily mission bonus</Text>
+              <Text style={styles.breakdownVal}>
+                +{brainrotIndex.breakdown.missionBonus} pts
+              </Text>
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownKey}>Focus break bonus</Text>
+              <Text style={styles.breakdownVal}>
+                +{brainrotIndex.breakdown.focusBreakBonus} pts
+              </Text>
+            </View>
+            <Text style={styles.breakdownSummary}>
+              {brainrotIndex.breakdown.summaryText}
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Daily Chest */}
@@ -488,7 +713,8 @@ export default function TodayScreen({
             : 'Complete a mission or focus break to grow your brain bank.'}
         </Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -613,20 +839,92 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 20,
   },
-  moodBadge: {
+
+  // Streak Card
+  streakCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 12,
+    gap: 12,
+    padding: 14,
     backgroundColor: COLORS.white,
     borderWidth: 1,
     borderColor: COLORS.line,
     borderRadius: RADIUS.lg,
+    marginBottom: 12,
+  },
+  streakIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.palePink,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  streakTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  streakTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.ink,
+  },
+  gracePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: '#e4f8ee',
+  },
+  gracePillText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#2d9364',
+  },
+  streakSub: {
+    fontSize: 10,
+    color: COLORS.muted,
+    marginTop: 3,
+  },
+  recoverStreakBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.pink,
+    alignSelf: 'flex-start',
+  },
+  recoverStreakBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+
+  // Mood Container
+  moodContainer: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.lg,
+    padding: 12,
     marginBottom: 16,
     shadowColor: '#eadceb',
     shadowOpacity: 0.5,
     shadowOffset: { width: 0, height: 3 },
     elevation: 2,
+  },
+  moodBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   moodFace: {
     width: 32,
@@ -643,6 +941,124 @@ const styles = StyleSheet.create({
   },
   moodLabel: { fontSize: 12, fontWeight: '700', color: COLORS.ink },
   moodValue: { fontSize: 10, color: COLORS.muted, marginTop: 2 },
+  moodSavedNote: {
+    fontSize: 10,
+    fontStyle: 'italic',
+    color: COLORS.purple,
+    marginTop: 3,
+  },
+  logMoodChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+    borderRadius: 14,
+    backgroundColor: '#f1eaf9',
+  },
+  logMoodChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  moodDrawer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f0e8f0',
+    gap: 10,
+  },
+  moodDrawerTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  moodOptionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  moodOptionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    borderRadius: 16,
+    backgroundColor: '#f4edf9',
+  },
+  moodOptionPillActive: {
+    backgroundColor: COLORS.purple,
+  },
+  moodOptionEmoji: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  moodOptionText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  moodOptionTextActive: {
+    color: COLORS.white,
+  },
+  moodNoteInput: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#dfd3eb',
+    backgroundColor: '#faf6fe',
+    fontSize: 11,
+    color: COLORS.ink,
+  },
+  moodDrawerFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  moodDrawerHint: {
+    flex: 1,
+    fontSize: 10,
+    color: COLORS.muted,
+  },
+  moodSaveBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.pink,
+  },
+  moodSaveBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  moodHistoryWrap: {
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f3ecf6',
+    gap: 4,
+  },
+  moodHistoryTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  moodHistoryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  moodHistoryDate: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.muted,
+  },
+  moodHistoryValue: {
+    flex: 1,
+    fontSize: 10,
+    color: COLORS.ink,
+  },
 
   // Usage Card
   usageCard: {
@@ -804,214 +1220,269 @@ const styles = StyleSheet.create({
   usageFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingTop: 10,
+    marginTop: 10,
     zIndex: 1,
   },
-  footerText: { fontSize: 11, color: '#cdbfe1' },
-  footerBold: { color: COLORS.white, fontWeight: '700' },
-  footerRemaining: { fontSize: 11, color: '#f7d755', fontWeight: '700' },
+  footerText: { fontSize: 11, color: '#dacdf0' },
+  footerBold: { fontWeight: '700', color: COLORS.white },
+  footerRemaining: { fontSize: 11, fontWeight: '700', color: '#ffe577' },
 
-  // Gentle Nudge
+  // Gentle Nudge Banner
   nudgeBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     padding: 12,
     borderRadius: RADIUS.lg,
-    backgroundColor: '#fff0f7',
+    backgroundColor: '#fff3d6',
     borderWidth: 1,
-    borderColor: '#f8cde1',
+    borderColor: '#f5dca4',
     marginBottom: 14,
   },
   nudgeIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#ffe0ef',
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    backgroundColor: '#ffe49e',
     justifyContent: 'center',
     alignItems: 'center',
   },
   nudgeText: {
     flex: 1,
     fontSize: 11,
+    fontWeight: '600',
     color: COLORS.ink,
     lineHeight: 16,
-    fontWeight: '600',
   },
 
-  // Index Card
+  // Brainrot Index
   indexCard: {
-    borderRadius: RADIUS.xl,
+    padding: 18,
+    borderRadius: RADIUS.lg,
     backgroundColor: COLORS.white,
-    padding: 22,
     borderWidth: 1,
-    borderColor: '#eee1ef',
-    marginBottom: 2,
-    shadowColor: 'rgba(81,44,138,0.06)',
-    shadowOpacity: 1,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
+    borderColor: COLORS.line,
+    marginBottom: 18,
   },
   indexTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  indexTopRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   trendBadge: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  trendText: { fontSize: 11, color: COLORS.green, fontWeight: '700' },
-  indexScore: {
-    fontSize: 56,
+  trendText: { fontSize: 11, fontWeight: '700', color: COLORS.green },
+  breakdownToggleBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+  },
+  breakdownToggleText: {
+    fontSize: 9,
     fontWeight: '700',
     color: COLORS.purple,
-    letterSpacing: -3,
-    marginTop: 16,
   },
-  indexMax: { fontSize: 22, color: COLORS.muted, letterSpacing: -0.5 },
-  indexLabel: { fontSize: 12, color: COLORS.muted, marginBottom: 18, lineHeight: 17 },
-  scaleRow: { flexDirection: 'row', gap: 4 },
-  scaleBar: { flex: 1, height: 9, borderRadius: 4 },
+  indexScore: {
+    fontSize: 38,
+    fontWeight: '700',
+    color: COLORS.purple,
+    letterSpacing: -2,
+    marginTop: 8,
+  },
+  indexMax: { fontSize: 18, color: '#a595b6' },
+  indexLabel: { fontSize: 11, color: COLORS.muted, marginTop: 4 },
+  scaleRow: {
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 12,
+  },
+  scaleBar: { flex: 1, height: 10, borderRadius: 10 },
   scaleLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 6,
+    marginTop: 7,
   },
   scaleText: { fontSize: 10, color: COLORS.muted },
+  breakdownPanel: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0e8f0',
+    gap: 6,
+  },
+  breakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  breakdownKey: {
+    fontSize: 11,
+    color: COLORS.muted,
+  },
+  breakdownVal: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  breakdownSummary: {
+    fontSize: 10,
+    color: COLORS.purple,
+    fontWeight: '600',
+    marginTop: 4,
+  },
 
-  // Section
+  // Section header
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    marginTop: 28,
-    marginBottom: 14,
+    alignItems: 'center',
+    marginTop: 18,
+    marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: COLORS.ink,
     letterSpacing: -0.5,
-    marginTop: 4,
   },
-  viewAll: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  viewAll: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   viewAllText: { fontSize: 11, fontWeight: '700', color: COLORS.purple },
-  missionList: { gap: 10 },
+  missionList: { gap: 11 },
 
-  // Chart
+  // Habit Chart
   chartContainer: {
     flexDirection: 'row',
-    height: 120,
-    marginTop: 4,
+    gap: 8,
+    padding: 16,
+    borderRadius: RADIUS.lg,
+    backgroundColor: '#f8f2fa',
+    borderWidth: 1,
+    borderColor: '#eee3f3',
   },
   chartLabels: {
     justifyContent: 'space-between',
-    height: 90,
-    paddingRight: 8,
+    paddingBottom: 22,
   },
-  chartLabel: { fontSize: 9, color: '#b3a7bc' },
+  chartLabel: { fontSize: 9, color: '#9c8eab' },
   chartBars: {
     flex: 1,
     flexDirection: 'row',
-    justifyContent: 'space-around',
     alignItems: 'flex-end',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e9e0ed',
-    height: 100,
+    gap: 9,
+    height: 118,
   },
   barWrap: {
-    height: 100,
-    justifyContent: 'flex-end',
+    flex: 1,
     alignItems: 'center',
-    gap: 6,
+    height: '100%',
+    justifyContent: 'flex-end',
+    gap: 7,
   },
   bar: {
-    width: 16,
-    minHeight: 8,
-    borderTopLeftRadius: 5,
-    borderTopRightRadius: 5,
-    backgroundColor: '#dac9ee',
+    width: '100%',
+    maxWidth: 26,
+    borderTopLeftRadius: 11,
+    borderTopRightRadius: 11,
+    borderBottomLeftRadius: 5,
+    borderBottomRightRadius: 5,
+    backgroundColor: '#cdb7eb',
   },
-  barPink: { backgroundColor: '#f7b7cf' },
+  barPink: { backgroundColor: COLORS.pink },
   barToday: {
-    backgroundColor: COLORS.pink,
-    shadowColor: '#fce4ee',
-    shadowOpacity: 0.8,
-    shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 4,
+    backgroundColor: COLORS.yellow,
+    borderWidth: 2,
+    borderColor: COLORS.purple,
   },
-  barLabel: { fontSize: 9, color: '#aca0b7' },
-  barLabelToday: { color: COLORS.pink, fontWeight: '700' },
+  barLabel: { fontSize: 10, fontWeight: '700', color: COLORS.muted },
+  barLabelToday: { color: COLORS.purple },
 
   // Callout
   callout: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    padding: 12,
-    marginTop: 12,
-    backgroundColor: '#f1edfb',
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: RADIUS.md,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#ede2ee',
   },
   calloutIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
-    backgroundColor: '#d9f2e3',
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: COLORS.paleGreen,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  calloutBold: { fontSize: 11, fontWeight: '700', color: COLORS.ink },
-  calloutSub: { fontSize: 10, color: COLORS.muted, marginTop: 2 },
-  sparkle: { color: COLORS.pink, fontSize: 14, position: 'absolute', right: 12, top: 10 },
+  calloutBold: { fontSize: 12, fontWeight: '700', color: COLORS.ink },
+  calloutSub: { fontSize: 10, color: COLORS.muted, marginTop: 1 },
+  sparkle: { color: COLORS.pink, fontSize: 18 },
 
-  // Break
+  // Break card
   breakCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 11,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    marginTop: 8,
+    gap: 12,
+    marginTop: 16,
+    padding: 14,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
   },
   breakIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#e9dcfb',
+    width: 40,
+    height: 40,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.lavender,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  breakTitle: { fontSize: 12, fontWeight: '700', color: COLORS.ink },
-  breakSub: { fontSize: 10, color: COLORS.muted, marginTop: 2 },
+  breakTitle: { fontSize: 13, fontWeight: '700', color: COLORS.ink },
+  breakSub: { fontSize: 11, color: COLORS.muted, marginTop: 3 },
 
-  // Banner
+  // Privacy Banner
   banner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: COLORS.line,
-    marginTop: 30,
-    paddingVertical: 16,
+    marginTop: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.paleGreen,
+    borderWidth: 1,
+    borderColor: '#cdecd9',
   },
   bannerIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: RADIUS.md,
-    backgroundColor: '#e2f6e9',
+    width: 36,
+    height: 36,
+    borderRadius: RADIUS.sm,
+    backgroundColor: COLORS.white,
     justifyContent: 'center',
     alignItems: 'center',
   },
   bannerBold: { fontSize: 12, fontWeight: '700', color: COLORS.ink },
-  bannerSub: { fontSize: 11, color: COLORS.muted, marginTop: 2, lineHeight: 16 },
+  bannerSub: { fontSize: 11, color: '#537364', marginTop: 2 },
 
-  // Earned
+  // Earned note
   earnedNote: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginTop: 14,
-    justifyContent: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: RADIUS.md,
+    backgroundColor: '#f7eff8',
   },
-  earnedText: { fontSize: 11, color: COLORS.muted },
+  earnedText: { fontSize: 11, color: COLORS.purple, flex: 1 },
 });
