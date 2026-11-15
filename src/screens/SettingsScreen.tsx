@@ -1,26 +1,55 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+} from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
+import { DAILY_LIMIT_OPTIONS } from '../constants/data';
+import { ConsentStatus, InstagramUsageSummary, UserSettings } from '../constants/types';
+import {
+  formatMinutesAsHoursAndMinutes,
+  MAX_DISPLAY_NAME_LENGTH,
+  UsageDisplayState,
+} from '../utils/domainLogic';
 import Icon from '../components/Icon';
 
 type Props = {
-  onToast: (message: string) => void;
+  displayName: string;
+  customDisplayName: string | null;
+  deviceDefaultName: string | null;
+  onSaveDisplayName: (rawName: string | null) => void;
+  consentStatus: ConsentStatus;
+  trackingEnabled: boolean;
+  dailyLimitMinutes: number;
+  settings: UserSettings;
+  usageSummary: InstagramUsageSummary | null;
+  usageDisplay: UsageDisplayState;
+  onToggleTracking: (nextEnabled: boolean) => void;
+  onOpenUsageSetup: () => void;
+  onOpenSystemUsageSettings: () => void;
+  onChangeDailyLimit: (minutes: number) => void;
+  onToggleSetting: (key: keyof UserSettings) => void;
+  onClearLocalHistory: () => void;
+  onRefreshUsage: () => void;
 };
 
 function SettingRow({
   iconName,
   title,
   detail,
-  initialChecked = false,
+  checked,
   onChange,
 }: {
   iconName: string;
   title: string;
   detail: string;
-  initialChecked?: boolean;
+  checked: boolean;
   onChange: () => void;
 }) {
-  const [enabled, setEnabled] = useState(initialChecked);
   return (
     <View style={styles.settingRow}>
       <View style={styles.settingIcon}>
@@ -31,20 +60,47 @@ function SettingRow({
         <Text style={styles.settingDetail}>{detail}</Text>
       </View>
       <TouchableOpacity
-        style={[styles.toggle, enabled && styles.toggleOn]}
-        onPress={() => {
-          setEnabled((v) => !v);
-          onChange();
-        }}
+        style={[styles.toggle, checked && styles.toggleOn]}
+        onPress={onChange}
         activeOpacity={0.7}
       >
-        <View style={[styles.toggleKnob, enabled && styles.toggleKnobOn]} />
+        <View style={[styles.toggleKnob, checked && styles.toggleKnobOn]} />
       </TouchableOpacity>
     </View>
   );
 }
 
-export default function SettingsScreen({ onToast }: Props) {
+export default function SettingsScreen({
+  displayName,
+  customDisplayName,
+  deviceDefaultName,
+  onSaveDisplayName,
+  consentStatus,
+  trackingEnabled,
+  dailyLimitMinutes,
+  settings,
+  usageSummary,
+  usageDisplay,
+  onToggleTracking,
+  onOpenUsageSetup,
+  onOpenSystemUsageSettings,
+  onChangeDailyLimit,
+  onToggleSetting,
+  onClearLocalHistory,
+  onRefreshUsage,
+}: Props) {
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [draftName, setDraftName] = useState(customDisplayName ?? displayName);
+
+  useEffect(() => {
+    setDraftName(customDisplayName ?? displayName);
+  }, [customDisplayName, displayName]);
+
+  const permissionGranted = Boolean(usageSummary?.permissionGranted);
+  const instagramInstalled = Boolean(usageSummary?.instagramInstalled);
+  const trackingActive =
+    consentStatus === 'accepted' && trackingEnabled && permissionGranted;
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -60,28 +116,298 @@ export default function SettingsScreen({ onToast }: Props) {
         ROT works around your life. Never the other way around.
       </Text>
 
-      {/* Settings List */}
+      {/* Profile & Display Name Section */}
+      <Text style={styles.sectionEyebrow}>PROFILE & DISPLAY NAME</Text>
+      <View style={styles.profileCard}>
+        <View style={styles.limitHeader}>
+          <View style={styles.settingIcon}>
+            <Icon name="user" size={18} color={COLORS.purple} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingTitle}>Display name: {displayName}</Text>
+            <Text style={styles.settingDetail}>
+              {customDisplayName
+                ? `Custom name active · Device fallback: ${deviceDefaultName || 'ROT User'}`
+                : `Using Android device default (${deviceDefaultName || 'ROT User'})`}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.nameInputRow}>
+          <TextInput
+            style={styles.nameInput}
+            value={draftName}
+            onChangeText={setDraftName}
+            maxLength={MAX_DISPLAY_NAME_LENGTH}
+            placeholder={deviceDefaultName || 'ROT User'}
+            placeholderTextColor="#a395b2"
+            autoCapitalize="words"
+            returnKeyType="done"
+            onSubmitEditing={() => onSaveDisplayName(draftName)}
+          />
+          {draftName.length > 0 && (
+            <TouchableOpacity
+              style={styles.nameClearBtn}
+              onPress={() => setDraftName('')}
+              activeOpacity={0.75}
+              accessibilityLabel="Clear display name input"
+            >
+              <Icon name="x" size={14} color={COLORS.muted} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={styles.nameSaveBtn}
+            onPress={() => onSaveDisplayName(draftName)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.nameSaveBtnText}>Save</Text>
+          </TouchableOpacity>
+        </View>
+        {customDisplayName && (
+          <TouchableOpacity
+            style={styles.nameResetBtn}
+            onPress={() => {
+              setDraftName(deviceDefaultName || 'ROT User');
+              onSaveDisplayName(null);
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.nameResetBtnText}>
+              Revert to device name ({deviceDefaultName || 'ROT User'})
+            </Text>
+          </TouchableOpacity>
+        )}
+        <Text style={styles.profileHint}>
+          Stored locally on this device only. No account, phone number, or contacts required.
+        </Text>
+      </View>
+
+      {/* Usage Access & Consent Section */}
+      <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
+        INSTAGRAM USAGE TRACKING
+      </Text>
+      <View style={styles.settingsList}>
+        <SettingRow
+          iconName="bar-chart"
+          title="Enable Instagram foreground tracking"
+          detail={
+            consentStatus !== 'accepted'
+              ? 'ROT needs Usage Access to estimate your Instagram screen time.'
+              : !trackingEnabled
+              ? 'Tracking is paused. Your previous saved progress is preserved.'
+              : permissionGranted
+              ? 'Active · Reading estimated foreground time via Android UsageStats'
+              : 'ROT needs Usage Access to estimate your Instagram screen time.'
+          }
+          checked={consentStatus === 'accepted' && trackingEnabled}
+          onChange={() => {
+            if (consentStatus !== 'accepted') {
+              onOpenUsageSetup();
+            } else {
+              onToggleTracking(!trackingEnabled);
+            }
+          }}
+        />
+
+        <View style={styles.permissionStatusBlock}>
+          <View style={styles.statusBadgesRow}>
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor:
+                      consentStatus === 'accepted' ? COLORS.green : COLORS.orange,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Consent: {consentStatus === 'accepted' ? 'Accepted' : 'Not granted'}
+              </Text>
+            </View>
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  { backgroundColor: permissionGranted ? COLORS.green : COLORS.orange },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Usage Access: {permissionGranted ? 'Allowed' : 'Denied'}
+              </Text>
+            </View>
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: instagramInstalled ? COLORS.green : COLORS.orange,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Instagram: {instagramInstalled ? 'Installed' : 'Missing'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.actionBtnRow}>
+            <TouchableOpacity
+              style={styles.actionBtnPrimary}
+              onPress={
+                consentStatus !== 'accepted'
+                  ? onOpenUsageSetup
+                  : onOpenSystemUsageSettings
+              }
+              activeOpacity={0.8}
+            >
+              <Icon name="external-link" size={13} color={COLORS.white} />
+              <Text style={styles.actionBtnPrimaryText}>
+                {consentStatus !== 'accepted'
+                  ? 'Grant permission'
+                  : permissionGranted
+                  ? 'System Usage Access Settings'
+                  : 'Grant permission'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionBtnSecondary}
+              onPress={onRefreshUsage}
+              activeOpacity={0.8}
+            >
+              <Icon name="refresh" size={13} color={COLORS.purple} />
+              <Text style={styles.actionBtnSecondaryText}>Sync</Text>
+            </TouchableOpacity>
+          </View>
+
+          {trackingActive && usageSummary?.todayForegroundMs !== null ? (
+            <Text style={styles.syncMetaText}>
+              Today’s verified estimate:{' '}
+              {
+                formatMinutesAsHoursAndMinutes(
+                  Math.round((usageSummary?.todayForegroundMs ?? 0) / 60000)
+                ).compact
+              }{' '}
+              ({usageSummary?.aggregationSource || 'usage_events'} · status: {usageDisplay.status})
+            </Text>
+          ) : (
+            <Text style={styles.syncMetaText}>
+              Status: {usageDisplay.subtitleText}
+            </Text>
+          )}
+        </View>
+      </View>
+
+      {/* Daily Limit Selector */}
+      <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
+        DAILY SCROLL TARGET
+      </Text>
+      <View style={styles.limitCard}>
+        <View style={styles.limitHeader}>
+          <View style={styles.settingIcon}>
+            <Icon name="sliders" size={18} color={COLORS.purple} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.settingTitle}>Daily Instagram target</Text>
+            <Text style={styles.settingDetail}>
+              Currently set to{' '}
+              {formatMinutesAsHoursAndMinutes(dailyLimitMinutes).compact} per day
+            </Text>
+          </View>
+        </View>
+        <View style={styles.limitOptionsRow}>
+          {DAILY_LIMIT_OPTIONS.map((opt) => {
+            const active = dailyLimitMinutes === opt.minutes;
+            return (
+              <TouchableOpacity
+                key={opt.minutes}
+                style={[styles.limitPill, active && styles.limitPillActive]}
+                onPress={() => onChangeDailyLimit(opt.minutes)}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.limitPillText,
+                    active && styles.limitPillTextActive,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+
+      {/* Preferences List */}
+      <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
+        BOUNDARIES & PRIVACY
+      </Text>
       <View style={styles.settingsList}>
         <SettingRow
           iconName="bell"
           title="Daily gentle nudge"
-          detail="A reminder when you are nearing your limit"
-          initialChecked
-          onChange={() => onToast('Reminder preference saved.')}
+          detail="A non-shaming reminder when you reach 80% or 100% of your limit"
+          checked={settings.dailyGentleNudge}
+          onChange={() => onToggleSetting('dailyGentleNudge')}
         />
         <SettingRow
           iconName="shield-check"
           title="Private mode"
           detail="Keep your progress and profile visible only to you"
-          initialChecked
-          onChange={() => onToast('You are private by default.')}
+          checked={settings.privateMode}
+          onChange={() => onToggleSetting('privateMode')}
         />
         <SettingRow
           iconName="clock"
           title="Weekend breathing room"
-          detail="Give yourself a little more space on Saturdays and Sundays"
-          onChange={() => onToast('Weekend breathing room enabled.')}
+          detail="Add +30m to your daily target on Saturdays and Sundays"
+          checked={settings.weekendBreathingRoom}
+          onChange={() => onToggleSetting('weekendBreathingRoom')}
         />
+      </View>
+
+      {/* Local Data Deletion */}
+      <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
+        LOCAL DATA & HISTORY
+      </Text>
+      <View style={styles.dangerCard}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.settingTitle}>Delete local usage & mission history</Text>
+          <Text style={styles.settingDetail}>
+            Clears cached usage summaries, completed missions, chests, and earned badges
+            stored on this device.
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[
+            styles.deleteBtn,
+            confirmClear && styles.deleteBtnConfirm,
+          ]}
+          onPress={() => {
+            if (!confirmClear) {
+              setConfirmClear(true);
+              return;
+            }
+            setConfirmClear(false);
+            onClearLocalHistory();
+          }}
+          activeOpacity={0.8}
+        >
+          <Icon
+            name="trash"
+            size={14}
+            color={confirmClear ? COLORS.white : COLORS.pink}
+          />
+          <Text
+            style={[
+              styles.deleteBtnText,
+              confirmClear && styles.deleteBtnTextConfirm,
+            ]}
+          >
+            {confirmClear ? 'Tap again to confirm' : 'Clear local history'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Note */}
@@ -92,8 +418,8 @@ export default function SettingsScreen({ onToast }: Props) {
             We do not need your Instagram password.
           </Text>
           <Text style={styles.noteDesc}>
-            ROT uses estimated device signals, not your account, messages, or the
-            content you watch.
+            ROT uses estimated Android UsageStats foreground signals—not your account,
+            messages, or exact Reel counts.
           </Text>
         </View>
       </View>
@@ -109,6 +435,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.8,
     color: COLORS.pink,
+  },
+  sectionEyebrow: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    color: COLORS.purple,
+    marginBottom: 8,
   },
   heading: {
     fontSize: 30,
@@ -127,6 +460,71 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
+  // Profile Card
+  profileCard: {
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.xl,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    gap: 12,
+  },
+  nameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  nameInput: {
+    flex: 1,
+    minWidth: 140,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#dfd3eb',
+    backgroundColor: '#faf6fe',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.ink,
+  },
+  nameClearBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nameSaveBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.purple,
+  },
+  nameSaveBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  nameResetBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#ffe8f2',
+    alignSelf: 'flex-start',
+  },
+  nameResetBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
+  profileHint: {
+    fontSize: 10,
+    color: COLORS.muted,
+    lineHeight: 15,
+  },
+
   // Settings List
   settingsList: {
     borderWidth: 1,
@@ -139,7 +537,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    paddingVertical: 18,
+    paddingVertical: 16,
     paddingHorizontal: 18,
     borderBottomWidth: 1,
     borderBottomColor: '#f0e8f0',
@@ -155,6 +553,151 @@ const styles = StyleSheet.create({
   settingCopy: { flex: 1 },
   settingTitle: { fontSize: 13, fontWeight: '700', color: COLORS.ink },
   settingDetail: { fontSize: 11, color: COLORS.muted, marginTop: 3, lineHeight: 16 },
+
+  // Permission block
+  permissionStatusBlock: {
+    padding: 16,
+    backgroundColor: '#faf6fe',
+    gap: 12,
+  },
+  statusBadgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#e8dff1',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  actionBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  actionBtnPrimary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.purple,
+  },
+  actionBtnPrimaryText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.white,
+  },
+  actionBtnSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#ece3f8',
+  },
+  actionBtnSecondaryText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  syncMetaText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontWeight: '600',
+  },
+
+  // Limit Card
+  limitCard: {
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.xl,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    gap: 14,
+  },
+  limitHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  limitOptionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  limitPill: {
+    paddingVertical: 8,
+    paddingHorizontal: 13,
+    borderRadius: 20,
+    backgroundColor: '#f1eaf9',
+  },
+  limitPillActive: {
+    backgroundColor: COLORS.pink,
+  },
+  limitPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
+  limitPillTextActive: {
+    color: COLORS.white,
+  },
+
+  // Danger / History
+  dangerCard: {
+    borderWidth: 1,
+    borderColor: '#f3d4e3',
+    borderRadius: RADIUS.xl,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    gap: 12,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#fff0f6',
+    borderWidth: 1,
+    borderColor: '#f8c3dc',
+    alignSelf: 'flex-start',
+  },
+  deleteBtnConfirm: {
+    backgroundColor: COLORS.pink,
+    borderColor: COLORS.pink,
+  },
+  deleteBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.pink,
+  },
+  deleteBtnTextConfirm: {
+    color: COLORS.white,
+  },
 
   // Toggle
   toggle: {

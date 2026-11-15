@@ -13,6 +13,7 @@ type Props = {
 
 export default function MissionsScreen({ missions, onMissionClick, earnedXp }: Props) {
   const completedCount = missions.filter((m) => m.done).length;
+  const grassUnlocked = completedCount >= 2;
 
   return (
     <ScrollView
@@ -26,7 +27,7 @@ export default function MissionsScreen({ missions, onMissionClick, earnedXp }: P
         Small quests, real reset<Text style={styles.dot}>.</Text>
       </Text>
       <Text style={styles.subtitle}>
-        No guilt. No leaderboard. Just a few ways to get back to yourself.
+        No guilt. No leaderboard pressure. Just a few ways to get back to yourself.
       </Text>
 
       {/* XP Badge */}
@@ -45,11 +46,13 @@ export default function MissionsScreen({ missions, onMissionClick, earnedXp }: P
           <Text style={styles.heroEyebrow}>LEVEL 04 · SOFT LAUNCHER</Text>
           <Text style={styles.heroTitle}>Build your offline superpower.</Text>
           <Text style={styles.heroSub}>
-            Finish two missions today to unlock a new brain badge.
+            Finish two missions today to unlock the Grass Toucher brain badge.
           </Text>
         </View>
         <View style={styles.questProgress}>
-          <Text style={styles.questCount}>{completedCount}/2</Text>
+          <Text style={styles.questCount}>
+            {completedCount}/{missions.length}
+          </Text>
           <Text style={styles.questLabel}>missions</Text>
         </View>
       </View>
@@ -58,24 +61,51 @@ export default function MissionsScreen({ missions, onMissionClick, earnedXp }: P
       <View style={styles.missionList}>
         {missions.map((mission, index) => (
           <MissionRow
-            key={mission.title}
+            key={mission.id}
             mission={mission}
             onPress={() => onMissionClick(index)}
           />
         ))}
 
-        {/* Locked mission */}
-        <View style={styles.lockedMission}>
-          <View style={styles.lockIcon}>
-            <Icon name="lock" size={16} color={COLORS.muted} />
+        {/* Milestone badge status */}
+        <View
+          style={[
+            styles.lockedMission,
+            grassUnlocked && styles.unlockedMilestone,
+          ]}
+        >
+          <View
+            style={[
+              styles.lockIcon,
+              grassUnlocked && { backgroundColor: COLORS.paleGreen },
+            ]}
+          >
+            <Icon
+              name={grassUnlocked ? 'check' : 'lock'}
+              size={16}
+              color={grassUnlocked ? COLORS.green : COLORS.muted}
+            />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.lockTitle}>Unlock: The Grass Toucher</Text>
+            <Text style={styles.lockTitle}>
+              {grassUnlocked
+                ? 'Unlocked: The Grass Toucher'
+                : 'Unlock: The Grass Toucher'}
+            </Text>
             <Text style={styles.lockSub}>
-              Complete 2 missions to reveal your next badge
+              {grassUnlocked
+                ? 'You completed 2+ missions today. Check the Badges tab!'
+                : 'Complete 2 missions to reveal your next badge'}
             </Text>
           </View>
-          <Text style={styles.lockLabel}>LOCKED</Text>
+          <Text
+            style={[
+              styles.lockLabel,
+              grassUnlocked && { color: COLORS.green },
+            ]}
+          >
+            {grassUnlocked ? 'UNLOCKED' : 'LOCKED'}
+          </Text>
         </View>
       </View>
     </ScrollView>
@@ -191,6 +221,11 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     borderColor: '#d8c8e4',
     borderRadius: RADIUS.md,
+  },
+  unlockedMilestone: {
+    borderStyle: 'solid',
+    borderColor: '#b9e4cb',
+    backgroundColor: '#f7fdf9',
   },
   lockIcon: {
     width: 38,

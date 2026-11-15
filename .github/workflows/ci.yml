@@ -1,0 +1,36 @@
+name: ROT Android Demo CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/rot-executive-demo
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: TypeScript, Lint & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript check
+        run: npm run typecheck
+
+      - name: Run Lint & SRS Guardrail checks
+        run: npm run lint
+
+      - name: Run Unit Tests
+        run: npm test

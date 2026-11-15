@@ -1,17 +1,42 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
-import { LeaderboardTab, Ranking } from '../constants/types';
+import { LeaderboardTab } from '../constants/types';
 import { rankings } from '../constants/data';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
+  userHandle: string;
+  userInitials: string;
+  totalXp: number;
+  earnedTodayXp: number;
   onToast: (message: string) => void;
 };
 
-export default function LeaderboardScreen({ onToast }: Props) {
+export default function LeaderboardScreen({
+  displayName,
+  userHandle,
+  userInitials,
+  totalXp,
+  earnedTodayXp,
+  onToast,
+}: Props) {
   const [tab, setTab] = useState<LeaderboardTab>('Friends');
-  const rows = rankings[tab];
+  const rows = rankings[tab]
+    .map((r) =>
+      r.current
+        ? {
+            ...r,
+            name: displayName,
+            handle: tab === 'Campus' ? r.handle : userHandle,
+            initials: userInitials,
+            xp: totalXp,
+            change: `+${earnedTodayXp} XP`,
+          }
+        : r
+    )
+    .sort((a, b) => b.xp - a.xp);
   const currentRank = rows.findIndex((r) => r.current) + 1;
 
   return (
@@ -63,9 +88,14 @@ export default function LeaderboardScreen({ onToast }: Props) {
         </Text>
 
         <View style={styles.leagueRange}>
-          <Text style={styles.rangeLabel}>284 XP</Text>
+          <Text style={styles.rangeLabel}>{totalXp} XP</Text>
           <View style={styles.rangeTrack}>
-            <View style={styles.rangeFill} />
+            <View
+              style={[
+                styles.rangeFill,
+                { width: `${Math.min(100, Math.round((totalXp / 450) * 100))}%` as any },
+              ]}
+            />
           </View>
           <Text style={styles.rangeLabel}>450 XP</Text>
         </View>
@@ -75,7 +105,9 @@ export default function LeaderboardScreen({ onToast }: Props) {
             <Icon name="crown" size={26} color={COLORS.purple} />
           </View>
           <Text style={styles.tierName}>GOLD-ISH</Text>
-          <Text style={styles.tierRank}>Rank 2 of 5</Text>
+          <Text style={styles.tierRank}>
+            Rank {currentRank} of {rows.length}
+          </Text>
         </View>
       </View>
 

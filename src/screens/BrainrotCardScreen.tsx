@@ -4,10 +4,24 @@ import { COLORS, RADIUS } from '../constants/theme';
 import Icon from '../components/Icon';
 
 type Props = {
+  displayName: string;
+  totalXp: number;
+  archetypeTitle: string;
+  archetypeDesc: string;
+  privateMode: boolean;
+  onEditName: () => void;
   onToast: (message: string) => void;
 };
 
-export default function BrainrotCardScreen({ onToast }: Props) {
+export default function BrainrotCardScreen({
+  displayName,
+  totalXp,
+  archetypeTitle,
+  archetypeDesc,
+  privateMode,
+  onEditName,
+  onToast,
+}: Props) {
   return (
     <ScrollView
       style={styles.scroll}
@@ -23,18 +37,37 @@ export default function BrainrotCardScreen({ onToast }: Props) {
         A lovingly unserious snapshot of your scrolling era.
       </Text>
 
-      <TouchableOpacity
-        style={styles.shareBtn}
-        onPress={() => onToast('Card copied to your imaginary story.')}
-        activeOpacity={0.8}
-      >
-        <Icon name="sparkles" size={14} color={COLORS.white} />
-        <Text style={styles.shareBtnText}>Share card</Text>
-      </TouchableOpacity>
+      <View style={styles.topBtnRow}>
+        <TouchableOpacity
+          style={styles.shareBtn}
+          onPress={() =>
+            onToast(
+              privateMode
+                ? 'Private mode is on: Card snapshot copied locally only.'
+                : 'Card copied to your imaginary story.'
+            )
+          }
+          activeOpacity={0.8}
+        >
+          <Icon name="sparkles" size={14} color={COLORS.white} />
+          <Text style={styles.shareBtnText}>
+            {privateMode ? 'Save private card' : 'Share card'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.editIdentityBtn}
+          onPress={onEditName}
+          activeOpacity={0.8}
+        >
+          <Icon name="edit" size={12} color={COLORS.purple} />
+          <Text style={styles.editIdentityBtnText}>{displayName}</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Identity Card */}
       <View style={styles.identityCard}>
-        <Text style={styles.cardStamp}>ROT. BRAINROT CLUB</Text>
+        <Text style={styles.cardStamp}>ROT. BRAINROT CLUB · {displayName.toUpperCase()}</Text>
 
         {/* Brain mascot (large) */}
         <View style={styles.largeMascot}>
@@ -44,18 +77,18 @@ export default function BrainrotCardScreen({ onToast }: Props) {
         </View>
 
         <Text style={styles.eyebrow}>CURRENT ARCHETYPE</Text>
-        <Text style={styles.archetypeTitle}>Night Owl</Text>
-        <Text style={styles.archetypeDesc}>
-          "One more Reel"{'\n'}is your bedtime story.
-        </Text>
+        <Text style={styles.archetypeTitle}>{archetypeTitle}</Text>
+        <Text style={styles.archetypeDesc}>{archetypeDesc}</Text>
         <View style={styles.divider} />
-        <Text style={styles.cardFoot}>MEMBER SINCE 2026 · RANK 04</Text>
+        <Text style={styles.cardFoot}>
+          {displayName.toUpperCase()} · MEMBER SINCE 2026 · {totalXp} XP · {privateMode ? 'PRIVATE' : 'PUBLIC'}
+        </Text>
       </View>
 
       {/* Evolution Path */}
       <View style={styles.detailPanel}>
         <Text style={styles.eyebrow}>EVOLUTION PATH</Text>
-        <Text style={styles.detailTitle}>From newbie to night owl</Text>
+        <Text style={styles.detailTitle}>From newbie to grass toucher</Text>
         <View style={styles.evolution}>
           <View style={[styles.evoNode, styles.evoNodeActive]}>
             <Text style={styles.evoEmoji}>◡</Text>
@@ -64,12 +97,19 @@ export default function BrainrotCardScreen({ onToast }: Props) {
           <View style={[styles.evoLine, styles.evoLineActive]} />
           <View style={[styles.evoNode, styles.evoNodeActive]}>
             <Text style={styles.evoEmoji}>◠</Text>
-            <Text style={styles.evoLabel}>Cooked</Text>
+            <Text style={styles.evoLabel}>{archetypeTitle}</Text>
           </View>
-          <View style={styles.evoLine} />
-          <View style={styles.evoNode}>
-            <Text style={[styles.evoEmoji, { color: '#b0a2bd' }]}>★</Text>
-            <Text style={styles.evoLabel}>Doctor Doom</Text>
+          <View style={[styles.evoLine, totalXp >= 400 && styles.evoLineActive]} />
+          <View style={[styles.evoNode, totalXp >= 400 && styles.evoNodeActive]}>
+            <Text
+              style={[
+                styles.evoEmoji,
+                { color: totalXp >= 400 ? COLORS.pink : '#b0a2bd' },
+              ]}
+            >
+              ★
+            </Text>
+            <Text style={styles.evoLabel}>Offline Legend</Text>
           </View>
         </View>
       </View>
@@ -110,6 +150,14 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 20,
   },
+  topBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 20,
+    flexWrap: 'wrap',
+  },
   shareBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -118,15 +166,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 10,
     backgroundColor: COLORS.pink,
-    alignSelf: 'flex-start',
-    marginTop: 14,
-    marginBottom: 20,
     shadowColor: '#bf256b',
     shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
   shareBtnText: { fontSize: 12, fontWeight: '700', color: COLORS.white },
+  editIdentityBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    borderRadius: 10,
+    backgroundColor: '#f1eaf9',
+    borderWidth: 1,
+    borderColor: '#e4d6f4',
+  },
+  editIdentityBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.purple,
+  },
 
   // Identity Card
   identityCard: {

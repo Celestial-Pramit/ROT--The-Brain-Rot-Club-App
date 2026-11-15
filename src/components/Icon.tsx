@@ -27,6 +27,14 @@ const iconMap: Record<string, string> = {
   'pause': 'pause',
   'lock': 'lock',
   'zap': 'zap',
+  'refresh': 'refresh-cw',
+  'info': 'info',
+  'trash': 'trash-2',
+  'sliders': 'sliders',
+  'external-link': 'external-link',
+  'alert-circle': 'alert-circle',
+  'edit': 'edit-2',
+  'user': 'user',
 };
 
 type Props = {
