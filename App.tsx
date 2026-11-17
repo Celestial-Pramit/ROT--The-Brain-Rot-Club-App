@@ -75,6 +75,7 @@ import {
   getInitialNotificationRoute,
   hasNotificationPermissionSilent,
   markAllNativeNotificationsRead,
+  openAndroidBatteryOptimizationSettings,
   openAndroidNotificationSettings,
   openAndroidUsageAccessSettings,
   postCloudMirrorOsNotification,
@@ -142,7 +143,9 @@ import {
   declineCloudSquadInvitation,
 } from './src/utils/cloudSquads';
 import {
+  isCloudNotificationTypeEnabled,
   parseNotificationTargetRoute,
+  sanitizeNotificationText,
   selectCloudNotificationsToMirror,
 } from './src/utils/notificationMirrorsCore';
 import { useReducedMotion } from './src/utils/useReducedMotion';
@@ -801,12 +804,14 @@ export default function App() {
         if (row.notification_type === 'squad_invite_received') {
           void refreshCloudNotifications(uid);
         }
-        void mirrorCloudNotificationsToAndroid(
-          [row],
-          uid,
-          cloudNotifPrefsRef.current
-        );
-        setToast(row.title);
+        const prefs = cloudNotifPrefsRef.current;
+        void mirrorCloudNotificationsToAndroid([row], uid, prefs);
+        if (isCloudNotificationTypeEnabled(row.notification_type, prefs)) {
+          const safeTitle = sanitizeNotificationText(row.title, 90);
+          if (safeTitle) {
+            setToast(safeTitle);
+          }
+        }
       },
       onUpdate: (row) => {
         setCloudNotifications((prev) => upsertCloudNotificationInList(prev, row));
@@ -830,10 +835,11 @@ export default function App() {
       (nextStatus: AppStateStatus) => {
         if (nextStatus === 'active' && hydrated) {
           const now = Date.now();
-          if (now - lastAutoRefreshAtRef.current >= 2500) {
-            void syncUsageStats(false);
-          }
-          void refreshNotificationStatus();
+          void refreshNotificationStatus().then(() => {
+            if (now - lastAutoRefreshAtRef.current >= 2500) {
+              void syncUsageStats(false);
+            }
+          });
           if (
             cloudAuthStatusRef.current === 'authenticated' &&
             cloudSessionRef.current?.user?.id
@@ -1262,6 +1268,8 @@ export default function App() {
     if (res.ok) {
       setToast(`Joined ${res.data.squad_name}!`);
       setNotificationCenterOpen(false);
+      setRequestedLeaderboardTab('Squad');
+      setRequestedLeaderboardTabSeq((seq) => seq + 1);
       handleSelectView('Leaderboard');
       if (cloudSessionRef.current?.user?.id) {
         void refreshCloudNotifications(cloudSessionRef.current.user.id);
@@ -1577,21 +1585,21 @@ export default function App() {
   async function handleSendTestNotification() {
     await checkAndRequestNotificationPermission();
     const status = await refreshNotificationStatus();
-    if (status.statusCode === 'permission_required') {
+    if (!status.runtimePermissionGranted) {
       const msg =
         'Android notification permission is currently denied. Tap "Open Android Notification Settings" to allow ROT notifications.';
       setTestNotificationFeedback(msg);
       setToast('Notification permission required.');
       return;
     }
-    if (status.statusCode === 'notifications_off') {
+    if (!status.appNotificationsEnabled) {
       const msg =
         'Notifications are turned off for ROT in Android system settings.';
       setTestNotificationFeedback(msg);
       setToast('App notifications are disabled in Android.');
       return;
     }
-    if (status.statusCode === 'channel_disabled') {
+    if (!status.nudgesChannelEnabled) {
       const msg =
         'The ROT Wellbeing Nudges channel is muted/disabled in Android settings.';
       setTestNotificationFeedback(msg);
@@ -1775,6 +1783,14 @@ export default function App() {
               const opened = await openAndroidNotificationSettings(channelId ?? null);
               if (!opened) {
                 setToast('Open Android Settings > Apps > ROT > Notifications.');
+              }
+            }}
+            onOpenBatterySettings={async () => {
+              const opened = await openAndroidBatteryOptimizationSettings();
+              if (!opened) {
+                setToast(
+                  'Open Android Settings > Apps > ROT > Battery saver and set No restrictions.'
+                );
               }
             }}
             onRefreshNotificationStatus={() => {

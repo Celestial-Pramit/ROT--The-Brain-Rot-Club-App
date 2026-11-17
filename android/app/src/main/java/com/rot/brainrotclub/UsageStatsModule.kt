@@ -213,6 +213,8 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 putBoolean("nudgesChannelEnabled", status.nudgesChannelEnabled)
                 putBoolean("remindersChannelEnabled", status.remindersChannelEnabled)
                 putBoolean("squadsChannelEnabled", status.squadsChannelEnabled)
+                putBoolean("ignoringBatteryOptimizations", status.ignoringBatteryOptimizations)
+                putString("deviceManufacturer", status.deviceManufacturer)
                 putString("statusCode", status.statusCode)
                 putBoolean("quietHoursActiveNow", RotNotificationPrefs.isWithinQuietHours(config))
                 putArray("sentKeysToday", sentArr)
@@ -225,11 +227,52 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 putBoolean("nudgesChannelEnabled", false)
                 putBoolean("remindersChannelEnabled", false)
                 putBoolean("squadsChannelEnabled", false)
+                putBoolean("ignoringBatteryOptimizations", false)
+                putString("deviceManufacturer", Build.MANUFACTURER ?: "unknown")
                 putString("statusCode", "notifications_off")
                 putBoolean("quietHoursActiveNow", false)
                 putArray("sentKeysToday", Arguments.createArray())
             }
             promise.resolve(map)
+        }
+    }
+
+    @ReactMethod
+    fun openBatteryOptimizationSettings(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val batteryIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            val detailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            // Prefer App Details on Xiaomi/Redmi so user can access both Battery Saver & Autostart directly
+            val preferred = if ((Build.MANUFACTURER ?: "").contains("xiaomi", ignoreCase = true) ||
+                (Build.MANUFACTURER ?: "").contains("redmi", ignoreCase = true) ||
+                (Build.MANUFACTURER ?: "").contains("poco", ignoreCase = true)
+            ) {
+                detailsIntent
+            } else {
+                batteryIntent
+            }
+            try {
+                context.startActivity(preferred)
+                promise.resolve(true)
+            } catch (_: Exception) {
+                context.startActivity(detailsIntent)
+                promise.resolve(true)
+            }
+        } catch (e: Exception) {
+            promise.reject("OPEN_BATTERY_SETTINGS_ERROR", "Unable to open battery settings: ${e.message}", e)
         }
     }
 
