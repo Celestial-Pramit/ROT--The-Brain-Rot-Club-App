@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -17,16 +18,20 @@ object RotNotificationHelper {
     const val CHANNEL_NUDGES_NAME = "ROT Gentle Nudges & Achievements"
     const val CHANNEL_REMINDERS_ID = "rot_scheduled_reminders"
     const val CHANNEL_REMINDERS_NAME = "ROT Daily & Streak Reminders"
+    const val CHANNEL_SQUADS_ID = "rot_cloud_squads"
+    const val CHANNEL_SQUADS_NAME = "ROT Squad & Account Alerts"
+    const val EXTRA_TARGET_ROUTE = "rot_target_route"
 
     data class NotificationStatusInfo(
         val runtimePermissionGranted: Boolean,
         val appNotificationsEnabled: Boolean,
         val nudgesChannelEnabled: Boolean,
         val remindersChannelEnabled: Boolean,
+        val squadsChannelEnabled: Boolean,
         val statusCode: String // "allowed" | "permission_required" | "notifications_off" | "channel_disabled"
     ) {
         val canDeliverAny: Boolean
-            get() = runtimePermissionGranted && appNotificationsEnabled && (nudgesChannelEnabled || remindersChannelEnabled)
+            get() = runtimePermissionGranted && appNotificationsEnabled && (nudgesChannelEnabled || remindersChannelEnabled || squadsChannelEnabled)
     }
 
     fun ensureChannels(context: Context) {
@@ -53,6 +58,16 @@ object RotNotificationHelper {
                 }
                 manager.createNotificationChannel(reminders)
             }
+            if (manager.getNotificationChannel(CHANNEL_SQUADS_ID) == null) {
+                val squads = NotificationChannel(
+                    CHANNEL_SQUADS_ID,
+                    CHANNEL_SQUADS_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Cloud squad invitations, acceptances, member updates, and role changes"
+                }
+                manager.createNotificationChannel(squads)
+            }
         }
     }
 
@@ -70,22 +85,27 @@ object RotNotificationHelper {
 
         var nudgesEnabled = true
         var remindersEnabled = true
+        var squadsEnabled = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             val nudgesCh = manager?.getNotificationChannel(CHANNEL_NUDGES_ID)
             val remindersCh = manager?.getNotificationChannel(CHANNEL_REMINDERS_ID)
+            val squadsCh = manager?.getNotificationChannel(CHANNEL_SQUADS_ID)
             if (nudgesCh != null) {
                 nudgesEnabled = nudgesCh.importance != NotificationManager.IMPORTANCE_NONE
             }
             if (remindersCh != null) {
                 remindersEnabled = remindersCh.importance != NotificationManager.IMPORTANCE_NONE
             }
+            if (squadsCh != null) {
+                squadsEnabled = squadsCh.importance != NotificationManager.IMPORTANCE_NONE
+            }
         }
 
         val statusCode = when {
             !runtimeGranted -> "permission_required"
             !appEnabled -> "notifications_off"
-            !nudgesEnabled || !remindersEnabled -> "channel_disabled"
+            !nudgesEnabled || !remindersEnabled || !squadsEnabled -> "channel_disabled"
             else -> "allowed"
         }
 
@@ -94,6 +114,7 @@ object RotNotificationHelper {
             appNotificationsEnabled = appEnabled,
             nudgesChannelEnabled = nudgesEnabled,
             remindersChannelEnabled = remindersEnabled,
+            squadsChannelEnabled = squadsEnabled,
             statusCode = statusCode
         )
     }
@@ -103,6 +124,7 @@ object RotNotificationHelper {
         if (!status.runtimePermissionGranted || !status.appNotificationsEnabled) return false
         return when (channelId) {
             CHANNEL_REMINDERS_ID -> status.remindersChannelEnabled
+            CHANNEL_SQUADS_ID -> status.squadsChannelEnabled
             else -> status.nudgesChannelEnabled
         }
     }
@@ -117,13 +139,27 @@ object RotNotificationHelper {
         else -> null
     }
 
+    fun defaultTargetRouteForNotification(notificationId: Int, channelId: String): String {
+        if (channelId == CHANNEL_SQUADS_ID) {
+            return "Leaderboard:Squad"
+        }
+        return when (notificationId) {
+            1001, 1002 -> "Today"
+            1003, 1004, 1005 -> "Missions"
+            1006 -> "Badges"
+            else -> "Today"
+        }
+    }
+
     fun postNotification(
         context: Context,
         channelId: String,
         notificationId: Int,
         title: String,
         body: String,
-        dedupKey: String? = null
+        dedupKey: String? = null,
+        targetRoute: String? = null,
+        recordInLocalInbox: Boolean = true
     ): Boolean {
         return try {
             ensureChannels(context)
@@ -135,11 +171,19 @@ object RotNotificationHelper {
             val dailyKey = dailyKeyForNotificationId(notificationId)
             val resolvedDedupKey = dedupKey ?: dailyKey?.let { "${dateKey}_${notificationId}" }
 
-            if (!resolvedDedupKey.isNullOrBlank() && RotNotificationPrefs.hasNotificationId(context, resolvedDedupKey)) {
+            if (recordInLocalInbox &&
+                !resolvedDedupKey.isNullOrBlank() &&
+                RotNotificationPrefs.hasNotificationId(context, resolvedDedupKey)
+            ) {
                 return false
             }
 
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val resolvedRoute = targetRoute?.takeIf { it.isNotBlank() }
+                ?: defaultTargetRouteForNotification(notificationId, channelId)
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(EXTRA_TARGET_ROUTE, resolvedRoute)
+            }
             val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             } else {
@@ -170,25 +214,60 @@ object RotNotificationHelper {
 
             NotificationManagerCompat.from(context).notify(notificationId, builder.build())
 
-            RotNotificationPrefs.recordDeliveredNotification(
-                context = context,
-                dedupKey = resolvedDedupKey,
-                notificationId = notificationId,
-                channelId = channelId,
-                title = title,
-                body = body,
-                nowMs = nowMs
-            )
-            if (dailyKey != null) {
-                RotNotificationPrefs.markSentOnDate(context, dateKey, dailyKey)
+            if (recordInLocalInbox) {
+                RotNotificationPrefs.recordDeliveredNotification(
+                    context = context,
+                    dedupKey = resolvedDedupKey,
+                    notificationId = notificationId,
+                    channelId = channelId,
+                    title = title,
+                    body = body,
+                    nowMs = nowMs
+                )
+                if (dailyKey != null) {
+                    RotNotificationPrefs.markSentOnDate(context, dateKey, dailyKey)
+                }
+                UsageStatsModule.emitNotificationsUpdated()
             }
-            UsageStatsModule.emitNotificationsUpdated()
             true
         } catch (_: SecurityException) {
             false
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun postCloudMirrorNotification(
+        context: Context,
+        dedupKey: String,
+        title: String,
+        body: String,
+        targetRoute: String? = null
+    ): Boolean {
+        val cleanKey = dedupKey.trim()
+        if (cleanKey.isEmpty()) return false
+        ensureChannels(context)
+        if (!canPostToChannel(context, CHANNEL_SQUADS_ID)) {
+            return false
+        }
+        if (RotNotificationPrefs.hasCloudOsDedupKey(context, cleanKey)) {
+            return false
+        }
+        val stableId = 3000 + ((cleanKey.hashCode() and 0x7fffffff) % 900000)
+        val posted = postNotification(
+            context = context,
+            channelId = CHANNEL_SQUADS_ID,
+            notificationId = stableId,
+            title = title,
+            body = body,
+            dedupKey = null,
+            targetRoute = targetRoute ?: "Leaderboard:Squad",
+            recordInLocalInbox = false
+        )
+        if (posted) {
+            RotNotificationPrefs.recordCloudOsDedupKey(context, cleanKey)
+        }
+        return posted
     }
 
     fun evaluateUsageInBackground(context: Context): Int {
