@@ -24,9 +24,37 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
         const val NAME = "RotUsageStats"
         const val INSTAGRAM_PACKAGE = RotUsageTracker.INSTAGRAM_PACKAGE
         const val EVENT_NOTIFICATIONS_UPDATED = "RotNotificationsUpdated"
+        const val EVENT_NOTIFICATION_OPENED = "RotNotificationOpened"
 
         @Volatile
         private var activeContextRef: WeakReference<ReactApplicationContext>? = null
+
+        @Volatile
+        private var pendingNotificationRoute: String? = null
+
+        private val routeLock = Any()
+
+        fun setPendingInitialRoute(route: String?) {
+            if (route.isNullOrBlank()) return
+            synchronized(routeLock) {
+                pendingNotificationRoute = route
+            }
+        }
+
+        fun handleIncomingNotificationRoute(route: String?) {
+            if (route.isNullOrBlank()) return
+            val ctx = activeContextRef?.get()
+            if (ctx != null && ctx.hasActiveReactInstance()) {
+                try {
+                    ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        .emit(EVENT_NOTIFICATION_OPENED, route)
+                    return
+                } catch (_: Exception) {
+                    // Fallback to pending route if JS instance not ready
+                }
+            }
+            setPendingInitialRoute(route)
+        }
 
         fun emitNotificationsUpdated() {
             try {
@@ -184,6 +212,7 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 putBoolean("appNotificationsEnabled", status.appNotificationsEnabled)
                 putBoolean("nudgesChannelEnabled", status.nudgesChannelEnabled)
                 putBoolean("remindersChannelEnabled", status.remindersChannelEnabled)
+                putBoolean("squadsChannelEnabled", status.squadsChannelEnabled)
                 putString("statusCode", status.statusCode)
                 putBoolean("quietHoursActiveNow", RotNotificationPrefs.isWithinQuietHours(config))
                 putArray("sentKeysToday", sentArr)
@@ -195,6 +224,7 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
                 putBoolean("appNotificationsEnabled", false)
                 putBoolean("nudgesChannelEnabled", false)
                 putBoolean("remindersChannelEnabled", false)
+                putBoolean("squadsChannelEnabled", false)
                 putString("statusCode", "notifications_off")
                 putBoolean("quietHoursActiveNow", false)
                 putArray("sentKeysToday", Arguments.createArray())
@@ -323,6 +353,42 @@ class UsageStatsModule(reactContext: ReactApplicationContext) :
             promise.resolve(posted)
         } catch (_: Exception) {
             promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun postCloudMirrorNotification(
+        dedupKey: String,
+        title: String,
+        body: String,
+        targetRoute: String?,
+        promise: Promise
+    ) {
+        try {
+            val posted = RotNotificationHelper.postCloudMirrorNotification(
+                context = reactApplicationContext,
+                dedupKey = dedupKey,
+                title = title,
+                body = body,
+                targetRoute = targetRoute
+            )
+            promise.resolve(posted)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getInitialNotificationRoute(promise: Promise) {
+        try {
+            val consumed = synchronized(routeLock) {
+                val route = pendingNotificationRoute
+                pendingNotificationRoute = null
+                route
+            }
+            promise.resolve(consumed)
+        } catch (_: Exception) {
+            promise.resolve(null)
         }
     }
 

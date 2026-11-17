@@ -6,8 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { COLORS, RADIUS } from '../constants/theme';
 import { DAILY_LIMIT_OPTIONS } from '../constants/data';
@@ -28,6 +26,10 @@ import {
   UsageDisplayState,
 } from '../utils/domainLogic';
 import { CloudAccountIdentity, CloudAuthStatus } from '../utils/authHelpers';
+import {
+  TextInputRefTarget,
+  useKeyboardAwareScroll,
+} from '../utils/useKeyboardAwareScroll';
 import Icon from '../components/Icon';
 
 type Props = {
@@ -163,8 +165,15 @@ export default function SettingsScreen({
   );
   const [customLimitError, setCustomLimitError] = useState<string | null>(null);
   const [showExportPreview, setShowExportPreview] = useState(false);
-  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
-  const limitCardYRef = useRef(0);
+  const {
+    scrollRef,
+    bottomSpacer,
+    handleScroll,
+    handleScrollLayout,
+    focusInput,
+  } = useKeyboardAwareScroll();
+  const draftNameInputRef = useRef<TextInputRefTarget>(null);
+  const customLimitInputRef = useRef<TextInputRefTarget>(null);
 
   useEffect(() => {
     setDraftName(customDisplayName ?? displayName);
@@ -215,19 +224,20 @@ export default function SettingsScreen({
   }
 
   return (
-    <KeyboardAvoidingView
+    <ScrollView
+      ref={scrollRef}
       style={styles.scroll}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'android' ? 80 : 0}
+      contentContainerStyle={[
+        styles.content,
+        { paddingBottom: 60 + bottomSpacer },
+      ]}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      scrollEventThrottle={16}
+      onScroll={(e) => handleScroll(e.nativeEvent.contentOffset.y)}
+      onLayout={handleScrollLayout}
     >
-      <ScrollView
-        ref={scrollRef}
-        style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: 60 }]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-      >
       {/* Header */}
       <Text style={styles.eyebrow}>CONTROL CENTER</Text>
       <Text style={styles.heading}>
@@ -490,6 +500,7 @@ export default function SettingsScreen({
         </View>
         <View style={styles.nameInputRow}>
           <TextInput
+            ref={draftNameInputRef}
             style={styles.nameInput}
             value={draftName}
             onChangeText={setDraftName}
@@ -498,6 +509,7 @@ export default function SettingsScreen({
             placeholderTextColor="#a395b2"
             autoCapitalize="words"
             returnKeyType="done"
+            onFocus={() => focusInput(draftNameInputRef.current, 64)}
             onSubmitEditing={() => onSaveDisplayName(draftName, syncNameToCloud)}
           />
           {draftName.length > 0 && (
@@ -679,12 +691,7 @@ export default function SettingsScreen({
       <Text style={[styles.sectionEyebrow, { marginTop: 22 }]}>
         DAILY SCROLL TARGET
       </Text>
-      <View
-        style={styles.limitCard}
-        onLayout={(e) => {
-          limitCardYRef.current = e.nativeEvent.layout.y;
-        }}
-      >
+      <View style={styles.limitCard}>
         <View style={styles.limitHeader}>
           <View style={styles.settingIcon}>
             <Icon name="sliders" size={18} color={COLORS.purple} />
@@ -754,6 +761,7 @@ export default function SettingsScreen({
           </TouchableOpacity>
 
           <TextInput
+            ref={customLimitInputRef}
             style={styles.customLimitInput}
             value={customLimitInput}
             onChangeText={(val) => {
@@ -765,14 +773,7 @@ export default function SettingsScreen({
             placeholder="Minutes"
             placeholderTextColor="#a395b2"
             returnKeyType="done"
-            onFocus={() => {
-              setTimeout(() => {
-                scrollRef.current?.scrollTo({
-                  y: Math.max(0, limitCardYRef.current - 24),
-                  animated: true,
-                });
-              }, 160);
-            }}
+            onFocus={() => focusInput(customLimitInputRef.current, 48)}
             onSubmitEditing={handleApplyCustomLimit}
           />
           <TouchableOpacity
@@ -985,6 +986,26 @@ export default function SettingsScreen({
                 style={[
                   styles.statusDot,
                   {
+                    backgroundColor:
+                      notificationStatus.squadsChannelEnabled !== false
+                        ? COLORS.green
+                        : COLORS.orange,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Squad channel:{' '}
+                {notificationStatus.squadsChannelEnabled !== false
+                  ? 'On'
+                  : 'Blocked'}
+              </Text>
+            </View>
+
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
                     backgroundColor: notificationStatus.quietHoursActiveNow
                       ? COLORS.purple
                       : COLORS.green,
@@ -1027,6 +1048,8 @@ export default function SettingsScreen({
                   notificationStatus.statusCode === 'channel_disabled'
                     ? !notificationStatus.nudgesChannelEnabled
                       ? 'rot_wellbeing_nudges'
+                      : notificationStatus.squadsChannelEnabled === false
+                      ? 'rot_cloud_squads'
                       : 'rot_scheduled_reminders'
                     : null
                 )
@@ -1152,8 +1175,7 @@ export default function SettingsScreen({
           </Text>
         </View>
       </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+    </ScrollView>
   );
 }
 
