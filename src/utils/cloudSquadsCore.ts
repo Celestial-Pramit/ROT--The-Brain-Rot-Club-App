@@ -48,6 +48,24 @@ export function normalizeInviteCode(rawCode: string): {
   return { valid: true, cleanCode, error: null };
 }
 
+export function validateInviteeUserId(rawId: string): {
+  valid: boolean;
+  cleanId: string;
+  error: string | null;
+} {
+  const cleanId = rawId.trim();
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(cleanId)) {
+    return {
+      valid: false,
+      cleanId,
+      error: 'Enter a valid ROT Member ID (UUID from Settings).',
+    };
+  }
+  return { valid: true, cleanId: cleanId.toLowerCase(), error: null };
+}
+
 export function formatStatusBandForRoster(
   band: ProfileStatusBand,
   shareSquadStatus: boolean

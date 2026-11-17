@@ -17,9 +17,21 @@ import {
 } from '../authHelpers';
 import {
   calculateTotalXp,
+  claimDailyChestState,
   createInitialPersistedState,
   DEFAULT_BASE_XP,
+  toggleMissionState,
+  updateCustomDisplayNameState,
 } from '../domainLogic';
+import {
+  AppStateStorageAdapter,
+  CLOUD_USER_STATE_KEY_PREFIX,
+  GUEST_STORAGE_KEY,
+  getOwnerStateStorageKey,
+  loadPersistedStateForOwner,
+  reconcileCloudUserXpWithProfile,
+  savePersistedStateForOwner,
+} from '../accountStorageCore';
 
 function createMemorySecureStoreBackend(): {
   backend: SecureStoreBackend;
@@ -324,5 +336,168 @@ describe('ROT Stage 3 — Encrypted Storage, Env Validation & Google Auth (Simul
     });
     assert.equal(supabaseSignedOut, true);
     assert.equal(signOutRes.ok, true);
+  });
+
+  it('Invokes ensureGoogleConfigured on cold-restored sign-out and isolates Supabase vs Google errors', async () => {
+    const events: string[] = [];
+    const coldSignOut = await performSignOut({
+      ensureGoogleConfigured: () => {
+        events.push('configure_google');
+        return true;
+      },
+      signOutSupabase: async () => {
+        events.push('supabase_signout');
+        return { error: null };
+      },
+      signOutGoogleNative: async () => {
+        events.push('google_signout');
+      },
+    });
+    assert.equal(coldSignOut.ok, true);
+    assert.deepEqual(events, [
+      'supabase_signout',
+      'configure_google',
+      'google_signout',
+    ]);
+
+    // Skips native sign-out when Google env is unconfigured
+    let nativeCalledWhenUnconfigured = false;
+    const unconfiguredSignOut = await performSignOut({
+      ensureGoogleConfigured: () => false,
+      signOutSupabase: async () => ({ error: null }),
+      signOutGoogleNative: async () => {
+        nativeCalledWhenUnconfigured = true;
+      },
+    });
+    assert.equal(unconfiguredSignOut.ok, true);
+    assert.equal(nativeCalledWhenUnconfigured, false);
+
+    // Fails if Supabase sign-out fails even when Google native succeeds
+    const supabaseFailSignOut = await performSignOut({
+      ensureGoogleConfigured: () => true,
+      signOutSupabase: async () => ({
+        error: new Error('Local storage failure'),
+      }),
+      signOutGoogleNative: async () => {},
+    });
+    assert.equal(supabaseFailSignOut.ok, false);
+  });
+
+  it('Isolates Guest XP (629 XP) across Guest -> Google A -> Guest -> Google B -> Google A transitions', async () => {
+    const rawMap = new Map<string, string>();
+    const storage: AppStateStorageAdapter = {
+      async getItem(key: string) {
+        return rawMap.get(key) ?? null;
+      },
+      async setItem(key: string, value: string) {
+        rawMap.set(key, value);
+      },
+    };
+
+    const dateKey = '2026-11-18';
+    assert.equal(getOwnerStateStorageKey(null), GUEST_STORAGE_KEY);
+    assert.equal(
+      getOwnerStateStorageKey('user-a'),
+      `${CLOUD_USER_STATE_KEY_PREFIX}user-a`
+    );
+
+    // 1. Seed Guest state at 629 XP (284 base + 345 earned)
+    let guestState = createInitialPersistedState(dateKey, 'Redmi 11 Prime');
+    guestState = {
+      ...guestState,
+      consentStatus: 'accepted',
+      trackingEnabled: true,
+      claimedXpEvents: {
+        'mission:2026-11-15:stay-under-target': 45,
+        'weekly:week-2026-11-09:under-target-week': 110,
+        'mission:2026-11-15:brain-check-in': 25,
+        'mission:2026-11-15:touch-grass': 40,
+        'mission:2026-11-15:set-scroll-limit': 35,
+        'mission:2026-11-16:stay-under-target': 45,
+        'mission:2026-11-18:stay-under-target': 45,
+      },
+    };
+    guestState = updateCustomDisplayNameState(guestState, 'Pramit').nextState;
+    assert.equal(calculateTotalXp(guestState), 629);
+    await savePersistedStateForOwner(storage, null, guestState);
+
+    const profileA: CloudProfile = {
+      id: 'user-a',
+      display_name: 'Account A',
+      avatar_url: null,
+      share_squad_status: false,
+      status_band: 'hidden',
+      timezone: 'Asia/Dhaka',
+      cloud_xp: 145,
+      created_at: '2026-11-18T00:00:00Z',
+      updated_at: '2026-11-18T00:00:00Z',
+    };
+    const profileB: CloudProfile = {
+      ...profileA,
+      id: 'user-b',
+      display_name: 'Account B',
+      cloud_xp: 0,
+    };
+
+    // 2. Guest -> Account A: inherits device consent/settings, starts from server 145 XP (not 629/284)
+    let stateA = await loadPersistedStateForOwner(storage, 'user-a', dateKey, {
+      templateState: guestState,
+      cloudProfile: profileA,
+    });
+    assert.equal(calculateTotalXp(stateA), 145);
+    assert.equal(stateA.profile.customDisplayName, null);
+    assert.equal(stateA.consentStatus, 'accepted');
+
+    // Account A earns 40 XP locally -> 185 XP
+    stateA = toggleMissionState(stateA, 0, dateKey, true).nextState;
+    assert.equal(calculateTotalXp(stateA), 185);
+    await savePersistedStateForOwner(storage, 'user-a', stateA);
+
+    // Reconciliation when server catches up to 185 must not double-count
+    const noDoubleCount = reconcileCloudUserXpWithProfile(stateA, {
+      ...profileA,
+      cloud_xp: 185,
+    });
+    assert.equal(noDoubleCount.changed, false);
+    assert.equal(calculateTotalXp(noDoubleCount.nextState), 185);
+
+    // 3. Sign out -> Guest must be unchanged at 629 XP with Pramit display name
+    const restoredGuest1 = await loadPersistedStateForOwner(
+      storage,
+      null,
+      dateKey
+    );
+    assert.equal(calculateTotalXp(restoredGuest1), 629);
+    assert.equal(restoredGuest1.profile.customDisplayName, 'Pramit');
+
+    // 4. Guest -> Account B: starts completely clean at 0 XP
+    let stateB = await loadPersistedStateForOwner(storage, 'user-b', dateKey, {
+      templateState: restoredGuest1,
+      cloudProfile: profileB,
+    });
+    assert.equal(calculateTotalXp(stateB), 0);
+    assert.equal(Object.keys(stateB.claimedXpEvents).length, 0);
+    assert.equal(stateB.profile.customDisplayName, null);
+
+    // Account B claims daily chest (+50 XP)
+    stateB = claimDailyChestState(stateB, new Date(2026, 10, 18)).nextState;
+    assert.equal(calculateTotalXp(stateB), 50);
+    await savePersistedStateForOwner(storage, 'user-b', stateB);
+
+    // 5. Switch back to Guest -> 629 XP; back to Account A -> 185 XP; back to Account B -> 50 XP
+    const restoredGuest2 = await loadPersistedStateForOwner(
+      storage,
+      null,
+      dateKey
+    );
+    const restoredA = await loadPersistedStateForOwner(storage, 'user-a', dateKey, {
+      cloudProfile: { ...profileA, cloud_xp: 185 },
+    });
+    const restoredB = await loadPersistedStateForOwner(storage, 'user-b', dateKey, {
+      cloudProfile: { ...profileB, cloud_xp: 50 },
+    });
+    assert.equal(calculateTotalXp(restoredGuest2), 629);
+    assert.equal(calculateTotalXp(restoredA), 185);
+    assert.equal(calculateTotalXp(restoredB), 50);
   });
 });

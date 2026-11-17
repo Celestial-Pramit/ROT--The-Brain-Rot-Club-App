@@ -106,17 +106,21 @@ export async function signOutFromCloud(): Promise<{
 }> {
   const client = getSupabaseClient();
   return performSignOut({
+    ensureGoogleConfigured: () => ensureGoogleSignInConfigured(),
     signOutSupabase: async () => {
       if (!client) {
         return { error: null };
       }
       const { error } = await client.auth.signOut();
-      return { error };
+      if (error) {
+        // Ensure local session is still cleared even if global token revocation fails (e.g. offline)
+        const { error: localErr } = await client.auth.signOut({ scope: 'local' });
+        return { error: localErr ?? null };
+      }
+      return { error: null };
     },
     signOutGoogleNative: async () => {
-      if (configuredForWebClientId) {
-        await GoogleSignin.signOut();
-      }
+      await GoogleSignin.signOut();
     },
   });
 }

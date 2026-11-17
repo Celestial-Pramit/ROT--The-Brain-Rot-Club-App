@@ -545,6 +545,7 @@ export async function performSessionRestore(
 }
 
 export type SignOutDeps = {
+  ensureGoogleConfigured?: () => boolean;
   signOutSupabase: () => Promise<{ error: unknown | null }>;
   signOutGoogleNative: () => Promise<void>;
 };
@@ -561,7 +562,12 @@ export async function performSignOut(
   }
 
   try {
-    await deps.signOutGoogleNative();
+    const shouldSignOutGoogle = deps.ensureGoogleConfigured
+      ? deps.ensureGoogleConfigured()
+      : true;
+    if (shouldSignOutGoogle) {
+      await deps.signOutGoogleNative();
+    }
   } catch {
     // Best-effort Google sign-out: Supabase session clearing is authoritative
   }

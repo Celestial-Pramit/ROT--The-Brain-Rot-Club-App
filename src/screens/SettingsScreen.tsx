@@ -261,6 +261,11 @@ export default function SettingsScreen({
                 ? 'Add EXPO_PUBLIC_SUPABASE_URL, EXPO_PUBLIC_SUPABASE_ANON_KEY, and EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to enable Google Sign-In.'
                 : 'Sign in with Google to connect your encrypted Club session. Local guest XP stays separate on this device.'}
             </Text>
+            {cloudAuthStatus === 'authenticated' && cloudIdentity ? (
+              <Text style={styles.cloudMetaSmall} selectable>
+                Member ID: {cloudIdentity.userId}
+              </Text>
+            ) : null}
           </View>
         </View>
 

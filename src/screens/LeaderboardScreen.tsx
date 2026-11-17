@@ -21,6 +21,7 @@ import {
   formatStatusBandForRoster,
   getMemberInitials,
   SquadWorkspaceSnapshot,
+  validateInviteeUserId,
 } from '../utils/cloudSquadsCore';
 import {
   acceptCloudSquadInvitation,
@@ -75,6 +76,7 @@ export default function LeaderboardScreen({
 
   const [newSquadName, setNewSquadName] = useState('');
   const [inviteCodeInput, setInviteCodeInput] = useState('');
+  const [targetInviteeId, setTargetInviteeId] = useState('');
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
   const [reportingMemberId, setReportingMemberId] = useState<string | null>(null);
   const [reportCategory, setReportCategory] =
@@ -113,6 +115,19 @@ export default function LeaderboardScreen({
     },
     [cloudAuthStatus, cloudUserId, selectedSquadId]
   );
+
+  useEffect(() => {
+    setExpandedMemberId(null);
+    setReportingMemberId(null);
+    setConfirmRemoveId(null);
+    setConfirmTransferId(null);
+    setConfirmBlockId(null);
+    setConfirmLeaveSquad(false);
+    setConfirmDeleteSquad(false);
+    setTargetInviteeId('');
+    setInviteCodeInput('');
+    setNewSquadName('');
+  }, [cloudUserId]);
 
   useEffect(() => {
     if (tab === 'Squad' && cloudAuthStatus === 'authenticated' && cloudUserId) {
@@ -203,6 +218,29 @@ export default function LeaderboardScreen({
       return;
     }
     onToast(`Invite code created: ${res.data.invite_code}`);
+    await reloadSquadWorkspace(activeSquad.id);
+  }
+
+  async function handleSendTargetedInvite() {
+    if (!activeSquad || squadBusy) return;
+    const check = validateInviteeUserId(targetInviteeId);
+    if (!check.valid) {
+      onToast(check.error || 'Enter a valid ROT Member ID.');
+      return;
+    }
+    setSquadBusy(true);
+    const res = await createCloudSquadInvitation(
+      activeSquad.id,
+      check.cleanId,
+      168
+    );
+    setSquadBusy(false);
+    if (!res.ok) {
+      onToast(res.error);
+      return;
+    }
+    setTargetInviteeId('');
+    onToast(`Targeted invitation sent (${res.data.invite_code}).`);
     await reloadSquadWorkspace(activeSquad.id);
   }
 
@@ -588,7 +626,34 @@ export default function LeaderboardScreen({
                       )}
                     </View>
 
-                    {/* Pending outgoing invites for Owner */}
+                    {/* Pending outgoing invites & targeted invite input for Owner */}
+                    {activeSquad.myRole === 'owner' && (
+                      <View style={styles.outgoingInvitesBox}>
+                        <Text style={styles.subEyebrow}>
+                          SEND TARGETED INVITATION BY MEMBER ID
+                        </Text>
+                        <View style={styles.inputRow}>
+                          <TextInput
+                            style={styles.textInput}
+                            value={targetInviteeId}
+                            onChangeText={setTargetInviteeId}
+                            placeholder="Paste member ID (UUID from Settings)"
+                            placeholderTextColor="#a395b2"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            maxLength={64}
+                          />
+                          <TouchableOpacity
+                            style={styles.smallPrimaryBtn}
+                            onPress={() => void handleSendTargetedInvite()}
+                            disabled={squadBusy}
+                          >
+                            <Text style={styles.smallPrimaryBtnText}>Send</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+
                     {activeSquad.myRole === 'owner' &&
                       (workspace?.outgoingInvites.length ?? 0) > 0 && (
                         <View style={styles.outgoingInvitesBox}>

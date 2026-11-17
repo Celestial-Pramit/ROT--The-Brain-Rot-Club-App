@@ -24,6 +24,7 @@ import {
   loadSquadWorkspace,
   normalizeInviteCode,
   sortSquadRosterForLeaderboard,
+  validateInviteeUserId,
   validateSquadName,
 } from '../cloudSquadsCore';
 import {
@@ -391,6 +392,13 @@ describe('ROT Stage 4.3 — Invite-Only Cloud Squads, Roster & Privacy Formattin
     const validCode = normalizeInviteCode('  ab12 cd34 ef56 7890 ');
     assert.equal(validCode.valid, true);
     assert.equal(validCode.cleanCode, 'AB12CD34EF567890');
+
+    assert.equal(validateInviteeUserId('not-a-uuid').valid, false);
+    const validUid = validateInviteeUserId(
+      '  7F49689F-E9E9-4536-BAA1-6D3B36B2067A '
+    );
+    assert.equal(validUid.valid, true);
+    assert.equal(validUid.cleanId, '7f49689f-e9e9-4536-baa1-6d3b36b2067a');
   });
 
   it('Formats roster status bands with BT-08 masking and sorts by cloud_xp DESC', async () => {

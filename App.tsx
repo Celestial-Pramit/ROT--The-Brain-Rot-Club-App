@@ -85,6 +85,7 @@ import {
   CloudProfile,
   resolveCloudAccountIdentity,
 } from './src/utils/authHelpers';
+import { reconcileCloudUserXpWithProfile } from './src/utils/accountStorageCore';
 import {
   buildProfileSyncPatch,
   deriveCloudStatusBand,
@@ -224,6 +225,9 @@ export default function App() {
   cloudSessionRef.current = cloudSession;
   const cloudProfileRef = useRef(cloudProfile);
   cloudProfileRef.current = cloudProfile;
+  const loadedStateOwnerRef = useRef<string | null>(null);
+  const ownerSwitchSeqRef = useRef(0);
+  const deviceNameRef = useRef<string | null>(null);
   const lastAutoRefreshAtRef = useRef(0);
   const lastProfilePatchSigRef = useRef<string | null>(null);
   const profileSyncInFlightRef = useRef(false);
@@ -238,11 +242,31 @@ export default function App() {
         uid,
         profileOverride ?? cloudProfileRef.current
       );
+      if (
+        cloudAuthStatusRef.current !== 'authenticated' ||
+        cloudSessionRef.current?.user?.id !== uid
+      ) {
+        return;
+      }
       setPendingCloudXpCount(res.remainingCount);
       if (res.syncedCount > 0 || res.latestCloudXp !== null) {
         const fresh = await fetchCloudProfile(uid);
+        if (
+          cloudAuthStatusRef.current !== 'authenticated' ||
+          cloudSessionRef.current?.user?.id !== uid
+        ) {
+          return;
+        }
         if (fresh) {
           setCloudProfile(fresh);
+          if (loadedStateOwnerRef.current === uid) {
+            setAppState((prev) => {
+              const reconciled = reconcileCloudUserXpWithProfile(prev, fresh);
+              if (!reconciled.changed) return prev;
+              void savePersistedState(reconciled.nextState, uid);
+              return reconciled.nextState;
+            });
+          }
         } else if (res.latestCloudXp !== null) {
           const nextXp = res.latestCloudXp;
           setCloudProfile((prev) =>
@@ -254,6 +278,57 @@ export default function App() {
     []
   );
 
+  const switchActiveOwnerState = useCallback(
+    async (
+      targetUserId: string | null,
+      options?: { cloudProfile?: CloudProfile | null }
+    ) => {
+      const seq = ++ownerSwitchSeqRef.current;
+
+      if (loadedStateOwnerRef.current === targetUserId && hydrated) {
+        if (targetUserId && options?.cloudProfile) {
+          setAppState((prev) => {
+            const reconciled = reconcileCloudUserXpWithProfile(
+              prev,
+              options.cloudProfile
+            );
+            if (!reconciled.changed) return prev;
+            void savePersistedState(reconciled.nextState, targetUserId);
+            return reconciled.nextState;
+          });
+        }
+        return;
+      }
+
+      const todayKey = getLocalDateKey();
+      const template = appStateRef.current;
+      let nextState = await loadPersistedState(todayKey, targetUserId, {
+        templateState: template,
+        cloudProfile: options?.cloudProfile,
+      });
+
+      if (seq !== ownerSwitchSeqRef.current) {
+        return;
+      }
+
+      if (deviceNameRef.current) {
+        nextState = updateDeviceDefaultNameState(
+          nextState,
+          deviceNameRef.current
+        );
+      }
+
+      loadedStateOwnerRef.current = targetUserId;
+      appStateRef.current = nextState;
+      setAppState(nextState);
+      if (nextState.cachedUsageSummary) {
+        setUsageSummary(nextState.cachedUsageSummary);
+      }
+      await savePersistedState(nextState, targetUserId);
+    },
+    [hydrated]
+  );
+
   const refreshCloudNotifications = useCallback(async (uidOverride?: string) => {
     const uid = uidOverride ?? cloudSessionRef.current?.user?.id;
     if (!uid || cloudAuthStatusRef.current !== 'authenticated') {
@@ -263,6 +338,12 @@ export default function App() {
       fetchCloudNotificationsFeed(uid),
       fetchCloudNotificationPreferences(uid),
     ]);
+    if (
+      cloudAuthStatusRef.current !== 'authenticated' ||
+      cloudSessionRef.current?.user?.id !== uid
+    ) {
+      return;
+    }
     if (!feed.error) {
       setCloudNotifications(feed.notifications);
       setCloudPendingInvites(feed.pendingInvites);
@@ -275,15 +356,17 @@ export default function App() {
       updater: (prev: PersistedAppState) => PersistedAppState,
       options?: { syncCloudXp?: boolean }
     ) => {
+      const storageOwnerId = loadedStateOwnerRef.current;
       setAppState((prev) => {
         const prevClaimed = prev.claimedXpEvents;
         const next = updater(prev);
-        void savePersistedState(next);
+        void savePersistedState(next, storageOwnerId);
 
         if (
           options?.syncCloudXp &&
           cloudAuthStatusRef.current === 'authenticated' &&
-          cloudSessionRef.current?.user?.id
+          cloudSessionRef.current?.user?.id &&
+          storageOwnerId === cloudSessionRef.current.user.id
         ) {
           const uid = cloudSessionRef.current.user.id;
           const profileSnapshot = cloudProfileRef.current;
@@ -296,8 +379,13 @@ export default function App() {
           if (newEvents.length > 0) {
             queueMicrotask(() => {
               void enqueueCloudXpEventsForUser(uid, newEvents).then((queue) => {
-                setPendingCloudXpCount(queue.length);
-                void flushPendingCloudXp(uid, profileSnapshot);
+                if (
+                  cloudAuthStatusRef.current === 'authenticated' &&
+                  cloudSessionRef.current?.user?.id === uid
+                ) {
+                  setPendingCloudXpCount(queue.length);
+                  void flushPendingCloudXp(uid, profileSnapshot);
+                }
               });
             });
           }
@@ -400,19 +488,50 @@ export default function App() {
     [updateAndPersist]
   );
 
-  // Hydrate persisted state, query device profile name, and query initial UsageStats
+  // Restore Supabase session FIRST, then hydrate the active owner's isolated local state
   useEffect(() => {
     let mounted = true;
+    const stopAutoRefresh = startSupabaseAutoRefreshLifecycle();
+
     (async () => {
-      const [loaded, deviceInfo, initialNotifStatus, initialInbox] =
+      const [sessionRes, deviceInfo, initialNotifStatus, initialInbox] =
         await Promise.all([
-          loadPersistedState(),
+          restoreCloudSession(),
           queryDeviceProfileInfo(),
           fetchNotificationStatus(),
           fetchNotificationInbox(),
         ]);
       if (!mounted) return;
+
+      deviceNameRef.current = deviceInfo.deviceName ?? null;
+      const bootOwnerId =
+        sessionRes.status === 'authenticated' && sessionRes.session?.user?.id
+          ? sessionRes.session.user.id
+          : null;
+
+      setCloudAuthStatus(sessionRes.status);
+      setCloudSession(sessionRes.session);
+      setCloudProfile(sessionRes.profile);
+      cloudAuthStatusRef.current = sessionRes.status;
+      cloudSessionRef.current = sessionRes.session;
+      cloudProfileRef.current = sessionRes.profile;
+
+      if (sessionRes.status === 'guest' && sessionRes.error) {
+        setAuthError(sessionRes.error);
+      }
+
       const todayKeyOnBoot = getLocalDateKey();
+      const guestTemplate = bootOwnerId
+        ? await loadPersistedState(todayKeyOnBoot, null)
+        : null;
+      if (!mounted) return;
+
+      const loaded = await loadPersistedState(todayKeyOnBoot, bootOwnerId, {
+        templateState: guestTemplate,
+        cloudProfile: sessionRes.profile,
+      });
+      if (!mounted) return;
+
       let hydratedState = updateDeviceDefaultNameState(
         loaded,
         deviceInfo.deviceName
@@ -430,20 +549,37 @@ export default function App() {
           },
         };
       }
+
+      loadedStateOwnerRef.current = bootOwnerId;
+      appStateRef.current = hydratedState;
       setNotificationStatus(initialNotifStatus);
       setNotificationInbox(initialInbox);
       setAppState(hydratedState);
-      if (hydratedState !== loaded) {
-        void savePersistedState(hydratedState);
+      if (hydratedState !== loaded || bootOwnerId !== null) {
+        void savePersistedState(hydratedState, bootOwnerId);
       }
       if (hydratedState.cachedUsageSummary) {
         setUsageSummary(hydratedState.cachedUsageSummary);
       }
       setHydrated(true);
 
+      if (bootOwnerId) {
+        void getPendingCloudXpCount(bootOwnerId).then((count) => {
+          if (mounted && cloudSessionRef.current?.user?.id === bootOwnerId) {
+            setPendingCloudXpCount(count);
+          }
+        });
+        void flushPendingCloudXp(bootOwnerId, sessionRes.profile);
+      } else {
+        setPendingCloudXpCount(0);
+      }
+
       lastAutoRefreshAtRef.current = Date.now();
       const liveSummary = await queryInstagramUsageSummary(7);
       if (!mounted) return;
+      if (liveSummary.deviceName) {
+        deviceNameRef.current = liveSummary.deviceName;
+      }
       setUsageSummary(liveSummary);
       const todayKey = getLocalDateKey();
       updateAndPersist((prev) => {
@@ -487,8 +623,9 @@ export default function App() {
     })();
     return () => {
       mounted = false;
+      stopAutoRefresh();
     };
-  }, [updateAndPersist, refreshNotificationStatus]);
+  }, [updateAndPersist, refreshNotificationStatus, flushPendingCloudXp]);
 
   // Listen for native Android notification deliveries in real time
   useEffect(() => {
@@ -498,31 +635,9 @@ export default function App() {
     return unsubscribe;
   }, [refreshNotificationInbox]);
 
-  // Restore persisted Supabase session from encrypted storage and subscribe to auth/refresh events
+  // Subscribe to cloud auth state changes and switch isolated local owner state safely
   useEffect(() => {
     let active = true;
-    const stopAutoRefresh = startSupabaseAutoRefreshLifecycle();
-
-    void restoreCloudSession().then((res) => {
-      if (!active) return;
-      setCloudAuthStatus(res.status);
-      setCloudSession(res.session);
-      setCloudProfile(res.profile);
-      if (res.status === 'authenticated' && res.session?.user?.id) {
-        cloudAuthStatusRef.current = 'authenticated';
-        cloudSessionRef.current = res.session;
-        cloudProfileRef.current = res.profile;
-        void getPendingCloudXpCount(res.session.user.id).then((count) => {
-          if (active) setPendingCloudXpCount(count);
-        });
-        void flushPendingCloudXp(res.session.user.id, res.profile);
-      } else {
-        setPendingCloudXpCount(0);
-      }
-      if (res.status === 'guest' && res.error) {
-        setAuthError(res.error);
-      }
-    });
 
     const unsubscribeAuth = subscribeToCloudAuthChanges(
       (_event, session, profile) => {
@@ -535,17 +650,33 @@ export default function App() {
           cloudAuthStatusRef.current = 'authenticated';
           cloudSessionRef.current = session;
           cloudProfileRef.current = profile;
-          void getPendingCloudXpCount(session.user.id).then((count) => {
-            if (active) setPendingCloudXpCount(count);
+          void switchActiveOwnerState(session.user.id, {
+            cloudProfile: profile,
+          }).then(() => {
+            if (!active || cloudSessionRef.current?.user?.id !== session.user.id) {
+              return;
+            }
+            void getPendingCloudXpCount(session.user.id).then((count) => {
+              if (active && cloudSessionRef.current?.user?.id === session.user.id) {
+                setPendingCloudXpCount(count);
+              }
+            });
+            void flushPendingCloudXp(session.user.id, profile);
           });
-          void flushPendingCloudXp(session.user.id, profile);
         } else {
           setCloudSession(null);
           setCloudProfile(null);
           setPendingCloudXpCount(0);
-          setCloudAuthStatus((prev) =>
-            prev === 'unconfigured' ? 'unconfigured' : 'guest'
-          );
+          cloudSessionRef.current = null;
+          cloudProfileRef.current = null;
+          setCloudAuthStatus((prev) => {
+            const nextStatus = prev === 'unconfigured' ? 'unconfigured' : 'guest';
+            cloudAuthStatusRef.current = nextStatus;
+            return nextStatus;
+          });
+          if (loadedStateOwnerRef.current !== null) {
+            void switchActiveOwnerState(null);
+          }
         }
       }
     );
@@ -553,9 +684,8 @@ export default function App() {
     return () => {
       active = false;
       unsubscribeAuth();
-      stopAutoRefresh();
     };
-  }, [flushPendingCloudXp]);
+  }, [flushPendingCloudXp, switchActiveOwnerState]);
 
   // Subscribe to Realtime Cloud Social Notifications while authenticated
   useEffect(() => {
@@ -870,7 +1000,6 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     const result = await signInWithGoogle();
-    setAuthBusy(false);
 
     if (result.ok) {
       lastProfilePatchSigRef.current = null;
@@ -880,7 +1009,15 @@ export default function App() {
       cloudAuthStatusRef.current = 'authenticated';
       cloudSessionRef.current = result.session;
       cloudProfileRef.current = result.profile;
-      void flushPendingCloudXp(result.session.user.id, result.profile);
+      await switchActiveOwnerState(result.session.user.id, {
+        cloudProfile: result.profile,
+      });
+      const pendingCount = await getPendingCloudXpCount(result.session.user.id);
+      if (cloudSessionRef.current?.user?.id === result.session.user.id) {
+        setPendingCloudXpCount(pendingCount);
+        void flushPendingCloudXp(result.session.user.id, result.profile);
+      }
+      setAuthBusy(false);
       const resolved = resolveCloudAccountIdentity(
         result.session.user,
         result.profile
@@ -889,6 +1026,7 @@ export default function App() {
       return;
     }
 
+    setAuthBusy(false);
     if (result.error.cancelled) {
       setToast(result.error.userMessage);
       return;
@@ -902,16 +1040,22 @@ export default function App() {
     if (authBusy) return;
     setAuthBusy(true);
     const result = await signOutFromCloud();
-    setAuthBusy(false);
 
     if (result.ok) {
       lastProfilePatchSigRef.current = null;
+      cloudAuthStatusRef.current = 'guest';
+      cloudSessionRef.current = null;
+      cloudProfileRef.current = null;
       setCloudSession(null);
       setCloudProfile(null);
+      setPendingCloudXpCount(0);
       setCloudAuthStatus('guest');
       setAuthError(null);
+      await switchActiveOwnerState(null);
+      setAuthBusy(false);
       setToast('Signed out of cloud account. Local guest progress is preserved.');
     } else {
+      setAuthBusy(false);
       const msg = result.error || 'Could not sign out right now.';
       setAuthError(msg);
       setToast(msg);
@@ -1255,7 +1399,20 @@ export default function App() {
   }
 
   function handleClearLocalHistory() {
-    updateAndPersist((prev) => clearLocalHistoryState(prev, dateKey));
+    updateAndPersist((prev) => {
+      const cleared = clearLocalHistoryState(prev, dateKey);
+      if (loadedStateOwnerRef.current !== null) {
+        const cloudReset: PersistedAppState = {
+          ...cleared,
+          baseXp: 0,
+        };
+        return reconcileCloudUserXpWithProfile(
+          cloudReset,
+          cloudProfileRef.current
+        ).nextState;
+      }
+      return cleared;
+    });
     void clearNativeNotificationHistory().then((emptyInbox) => {
       setNotificationInbox(emptyInbox);
     });
