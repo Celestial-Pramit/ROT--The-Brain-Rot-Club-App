@@ -33,3 +33,8 @@
 -keepclassmembers class * {
     @androidx.annotation.Keep *;
 }
+
+# Preserve generated RoomDatabase *_Impl no-arg constructors (e.g. WorkManager WorkDatabase_Impl) under R8 full mode
+-keep class * extends androidx.room.RoomDatabase {
+    <init>();
+}
