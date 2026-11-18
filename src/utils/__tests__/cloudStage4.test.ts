@@ -39,6 +39,7 @@ import {
 import { computeScrollbarMetrics } from '../notificationScrollbarCore';
 import {
   buildCloudNotificationMirrorSpec,
+  isCloudNotificationTypeEnabled,
   parseNotificationTargetRoute,
   sanitizeNotificationText,
   selectCloudNotificationsToMirror,
@@ -706,6 +707,27 @@ describe('ROT Stage 4.4 — Cloud Social Notifications, Unread Count & Invite Ac
     });
     assert.equal(parseNotificationTargetRoute('unknown_route'), null);
     assert.equal(parseNotificationTargetRoute(null), null);
+
+    // Foreground Realtime toast & category preference checks
+    assert.equal(
+      isCloudNotificationTypeEnabled('squad_invite_received', {
+        squad_invites_enabled: false,
+        squad_activity_enabled: true,
+      }),
+      false
+    );
+    assert.equal(
+      isCloudNotificationTypeEnabled('squad_member_joined', {
+        squad_invites_enabled: true,
+        squad_activity_enabled: false,
+      }),
+      false
+    );
+    const jwtSanitized = sanitizeNotificationText(
+      'Alert eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      90
+    );
+    assert.equal(jwtSanitized.includes('eyJhbGci'), false);
   });
 });
 

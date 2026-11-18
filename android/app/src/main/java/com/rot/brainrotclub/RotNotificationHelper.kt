@@ -6,7 +6,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -28,6 +30,8 @@ object RotNotificationHelper {
         val nudgesChannelEnabled: Boolean,
         val remindersChannelEnabled: Boolean,
         val squadsChannelEnabled: Boolean,
+        val ignoringBatteryOptimizations: Boolean,
+        val deviceManufacturer: String,
         val statusCode: String // "allowed" | "permission_required" | "notifications_off" | "channel_disabled"
     ) {
         val canDeliverAny: Boolean
@@ -102,6 +106,17 @@ object RotNotificationHelper {
             }
         }
 
+        val ignoringBatteryOptimizations = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+            } catch (_: Exception) {
+                false
+            }
+        } else {
+            true
+        }
+
         val statusCode = when {
             !runtimeGranted -> "permission_required"
             !appEnabled -> "notifications_off"
@@ -115,6 +130,8 @@ object RotNotificationHelper {
             nudgesChannelEnabled = nudgesEnabled,
             remindersChannelEnabled = remindersEnabled,
             squadsChannelEnabled = squadsEnabled,
+            ignoringBatteryOptimizations = ignoringBatteryOptimizations,
+            deviceManufacturer = Build.MANUFACTURER ?: "unknown",
             statusCode = statusCode
         )
     }
@@ -180,8 +197,14 @@ object RotNotificationHelper {
 
             val resolvedRoute = targetRoute?.takeIf { it.isNotBlank() }
                 ?: defaultTargetRouteForNotification(notificationId, channelId)
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val launchIntent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = Uri.parse("rot://notification/${Uri.encode(resolvedRoute)}/$notificationId")
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
                 putExtra(EXTRA_TARGET_ROUTE, resolvedRoute)
             }
             val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -189,11 +212,12 @@ object RotNotificationHelper {
             } else {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
-            val pendingIntent = if (launchIntent != null) {
-                PendingIntent.getActivity(context, notificationId, launchIntent, pendingFlags)
-            } else {
-                null
-            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                notificationId,
+                launchIntent,
+                pendingFlags
+            )
             val iconRes = if (context.applicationInfo.icon != 0) {
                 context.applicationInfo.icon
             } else {

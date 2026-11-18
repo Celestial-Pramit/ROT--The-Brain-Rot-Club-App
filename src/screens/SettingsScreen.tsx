@@ -49,6 +49,7 @@ type Props = {
   onOpenUsageSetup: () => void;
   onOpenSystemUsageSettings: () => void;
   onOpenNotificationSettings: (channelId?: string | null) => void;
+  onOpenBatterySettings?: () => void;
   onRefreshNotificationStatus: () => void;
   onChangeDailyLimit: (minutes: number) => void;
   onToggleSetting: (key: keyof UserSettings) => void;
@@ -133,6 +134,7 @@ export default function SettingsScreen({
   onOpenUsageSetup,
   onOpenSystemUsageSettings,
   onOpenNotificationSettings,
+  onOpenBatterySettings,
   onRefreshNotificationStatus,
   onChangeDailyLimit,
   onToggleSetting,
@@ -1018,6 +1020,25 @@ export default function SettingsScreen({
                   : 'Alerts active'}
               </Text>
             </View>
+
+            <View style={styles.statusBadge}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: notificationStatus.ignoringBatteryOptimizations
+                      ? COLORS.green
+                      : COLORS.purple,
+                  },
+                ]}
+              />
+              <Text style={styles.statusBadgeText}>
+                Battery:{' '}
+                {notificationStatus.ignoringBatteryOptimizations
+                  ? 'Unrestricted'
+                  : 'Optimized'}
+              </Text>
+            </View>
           </View>
 
           <View style={styles.actionBtnRow}>
@@ -1039,6 +1060,19 @@ export default function SettingsScreen({
               <Text style={styles.actionBtnSecondaryText}>Check status</Text>
             </TouchableOpacity>
           </View>
+
+          {!notificationStatus.ignoringBatteryOptimizations && onOpenBatterySettings ? (
+            <TouchableOpacity
+              style={styles.actionBtnSecondary}
+              onPress={onOpenBatterySettings}
+              activeOpacity={0.8}
+            >
+              <Icon name="sliders" size={13} color={COLORS.purple} />
+              <Text style={styles.actionBtnSecondaryText}>
+                Battery & Autostart Settings
+              </Text>
+            </TouchableOpacity>
+          ) : null}
 
           {!notifBadgeHealthy && (
             <TouchableOpacity
@@ -1076,7 +1110,7 @@ export default function SettingsScreen({
             </View>
           ) : (
             <Text style={styles.syncMetaText}>
-              Scheduled reminders survive app close & reboot via Android AlarmManager + WorkManager (15m periodic usage checks). Force-stop pauses Android background jobs until reopened.
+              Local reminders survive app close & reboot via Android AlarmManager + WorkManager (15m periodic checks). On Xiaomi/Redmi/HyperOS, enable No restrictions & Autostart if alarms are delayed; force-stopping pauses local jobs until reopened. Cloud Squad OS alerts mirror active Realtime sessions (no remote push when terminated).
             </Text>
           )}
         </View>

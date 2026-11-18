@@ -68,6 +68,7 @@ type RotUsageStatsNativeModule = {
   areNotificationsEnabled?(): Promise<boolean>;
   getNotificationStatus?(): Promise<NotificationStatusSnapshot>;
   openNotificationSettings?(channelId: string | null): Promise<boolean>;
+  openBatteryOptimizationSettings?(): Promise<boolean>;
   syncNotificationConfig?(config: NotificationSyncPayload): Promise<boolean>;
   triggerBackgroundUsageCheckNow?(): Promise<boolean>;
   postLocalNotification?(
@@ -150,6 +151,7 @@ export async function fetchNotificationStatus(): Promise<NotificationStatusSnaps
       nudgesChannelEnabled: false,
       remindersChannelEnabled: false,
       squadsChannelEnabled: false,
+      ignoringBatteryOptimizations: false,
       statusCode: 'notifications_off',
       quietHoursActiveNow: false,
       sentKeysToday: [],
@@ -164,6 +166,7 @@ export async function fetchNotificationStatus(): Promise<NotificationStatusSnaps
       nudgesChannelEnabled: false,
       remindersChannelEnabled: false,
       squadsChannelEnabled: false,
+      ignoringBatteryOptimizations: false,
       statusCode: 'notifications_off',
       quietHoursActiveNow: false,
       sentKeysToday: [],
@@ -179,6 +182,20 @@ export async function openAndroidNotificationSettings(
   }
   try {
     return await NativeRotUsageStats.openNotificationSettings(channelId);
+  } catch {
+    return false;
+  }
+}
+
+export async function openAndroidBatteryOptimizationSettings(): Promise<boolean> {
+  if (
+    Platform.OS !== 'android' ||
+    !NativeRotUsageStats?.openBatteryOptimizationSettings
+  ) {
+    return false;
+  }
+  try {
+    return await NativeRotUsageStats.openBatteryOptimizationSettings();
   } catch {
     return false;
   }
